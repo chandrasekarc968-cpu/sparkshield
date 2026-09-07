@@ -10,8 +10,10 @@ artifacts/
 *.pt
 *.onnx
 !android_app/app/src/main/assets/*.onnx
+!android_app/app/src/main/assets/*.bin
 *.npy
 *.npz
+models/calibration/raw_tensors/
 models/test_data.npz
 models/sparkshield_1d_cnn.pt
 models/sparkshield_1d_cnn.onnx

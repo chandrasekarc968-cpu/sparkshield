@@ -123,9 +123,9 @@ class MainActivity : AppCompatActivity() {
             tvConnectionStatus.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
         }
 
-        // Model Load Status
+        // Model Load Status & Accelerator Indicator
         if (state.isModelLoaded) {
-            tvModelStatus.text = "Model: Loaded (ONNX Runtime CPU)"
+            tvModelStatus.text = "Accelerator: ${state.accelerator} | Model: Ready"
             tvModelStatus.setTextColor(ContextCompat.getColor(this, R.color.color_normal))
         } else if (state.modelLoadError != null) {
             tvModelStatus.text = "Model Error: ${state.modelLoadError}"

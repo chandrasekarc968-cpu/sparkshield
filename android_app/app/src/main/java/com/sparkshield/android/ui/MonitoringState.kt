@@ -44,7 +44,8 @@ data class MonitoringState(
     val providerDetails: String = "Initializing...",
     val bleRssi: Int? = null,
     val persistedTamperEvents: Long = 0L,
-    val persistedSnapshots: Long = 0L
+    val persistedSnapshots: Long = 0L,
+    val accelerator: String = "CPU (ONNX)"
 ) {
     val latencyMs: Float
         get() = inferenceLatencyUs / 1000.0f
@@ -79,6 +80,7 @@ data class MonitoringState(
         if (tamperAlertLog != other.tamperAlertLog) return false
         if (persistedTamperEvents != other.persistedTamperEvents) return false
         if (persistedSnapshots != other.persistedSnapshots) return false
+        if (accelerator != other.accelerator) return false
         return true
     }
 
@@ -108,6 +110,7 @@ data class MonitoringState(
         result = 31 * result + tamperAlertLog.hashCode()
         result = 31 * result + persistedTamperEvents.hashCode()
         result = 31 * result + persistedSnapshots.hashCode()
+        result = 31 * result + accelerator.hashCode()
         return result
     }
 }

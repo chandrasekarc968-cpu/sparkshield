@@ -16,6 +16,7 @@ import com.sparkshield.android.inference.ClassLabels
 import com.sparkshield.android.inference.CpuOnnxInferenceEngine
 import com.sparkshield.android.inference.InferenceEngine
 import com.sparkshield.android.inference.InferenceResult
+import com.sparkshield.android.inference.QnnHtpInferenceEngine
 import com.sparkshield.android.protocol.ProtocolResult
 import com.sparkshield.android.protocol.SequenceStatus
 import com.sparkshield.android.protocol.SequenceTracker
@@ -88,7 +89,10 @@ class SparkShieldMonitoringService(
         webSocketPublisher = WebSocketPublisher(port = 8765)
         webSocketPublisher.start()
 
-        inferenceEngine = CpuOnnxInferenceEngine(context = applicationContext)
+        inferenceEngine = QnnHtpInferenceEngine(
+            context = applicationContext,
+            cpuFallbackEngine = CpuOnnxInferenceEngine(context = applicationContext)
+        )
 
         // Start ongoing foreground notification
         val initialNotification = notificationHelper.buildForegroundNotification("Initializing edge inference engine...")
@@ -131,11 +135,13 @@ class SparkShieldMonitoringService(
             val loadResult = inferenceEngine.load()
             val isLoaded = loadResult.isSuccess
             val loadError = loadResult.exceptionOrNull()?.message
+            val acceleratorName = (inferenceEngine as? QnnHtpInferenceEngine)?.activeAccelerator ?: "CPU (ONNX)"
 
             _serviceState.update {
                 it.copy(
                     isModelLoaded = isLoaded,
-                    modelLoadError = loadError
+                    modelLoadError = loadError,
+                    accelerator = acceleratorName
                 )
             }
 
