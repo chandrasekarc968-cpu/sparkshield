@@ -25,11 +25,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class WebSocketPublisher(
     val port: Int = 8765,
+    val host: String = "127.0.0.1",
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) {
     private val tag = "SparkShieldPublisher"
     private val isRunning = AtomicBoolean(false)
-    private val server = WebSocketServer(port = port)
+    private val server = WebSocketServer(port = port, host = host)
 
     private val publisherScope = CoroutineScope(SupervisorJob() + ioDispatcher)
     private var broadcastJob: Job? = null

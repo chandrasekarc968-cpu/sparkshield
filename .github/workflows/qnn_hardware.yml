@@ -1,0 +1,41 @@
+name: Snapdragon Hexagon HTP Hardware Benchmark (Self-Hosted)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_soc:
+        description: "Target Snapdragon SoC"
+        required: true
+        default: "SM8750"
+      target_htp_arch:
+        description: "Hexagon HTP Architecture Version"
+        required: true
+        default: "v79"
+
+jobs:
+  snapdragon-qnn-validation:
+    name: Qualcomm Hexagon HTP On-Device Validation
+    runs-on: [self-hosted, snapdragon-device]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Qualcomm QAIRT / QNN SDK Tools
+        run: |
+          which qnn-onnx-converter || echo "Checking QNN_SDK_ROOT..."
+          python -c "import shutil; assert shutil.which('qnn-onnx-converter') is not None, 'QNN SDK not in PATH'"
+
+      - name: Check Connected Snapdragon Device
+        run: |
+          adb devices
+          adb shell getprop ro.soc.model
+          adb shell ls -l /dev/fastrpc-cdsp
+
+      - name: Compile Genuine QNN Context Binary for Target SoC
+        run: |
+          python -m models.compile_qnn --soc ${{ github.event.inputs.target_soc }} --htp-arch ${{ github.event.inputs.target_htp_arch }}
+
+      - name: Run On-Device Benchmark & Parity Verification
+        run: |
+          python tests/verify_phase7_qnn.py --hardware

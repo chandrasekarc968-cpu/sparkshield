@@ -125,7 +125,12 @@ class MainActivity : AppCompatActivity() {
 
         // Model Load Status & Accelerator Indicator
         if (state.isModelLoaded) {
-            tvModelStatus.text = "Accelerator: ${state.accelerator} | Model: Ready"
+            val statusDetail = if (state.fallbackReason != null) {
+                "Accelerator: ${state.accelerator} (Fallback: ${state.qnnInitStatus}) | Model: Ready"
+            } else {
+                "Accelerator: ${state.accelerator} | Model: Ready"
+            }
+            tvModelStatus.text = statusDetail
             tvModelStatus.setTextColor(ContextCompat.getColor(this, R.color.color_normal))
         } else if (state.modelLoadError != null) {
             tvModelStatus.text = "Model Error: ${state.modelLoadError}"

@@ -1,47 +1,39 @@
 {
   "model_name": "sparkshield_1d_cnn",
   "target_backend": "Qualcomm Hexagon Tensor Processor (HTP)",
-  "htp_architecture": "HTP_V73",
-  "qnn_sdk_version": "2.20",
-  "onnx_source_sha256": "3da3baff5ec2859dd8d0031e69971cc9b92090d2515c8f640369cb4580801d60",
-  "context_binary": {
-    "filename": "sparkshield_htp.bin",
-    "size_bytes": 43042,
-    "input_name": "input",
-    "input_shape": [
-      1,
-      1,
-      128
-    ],
-    "input_dtype": "FLOAT32",
-    "output_name": "logits",
-    "output_shape": [
-      1,
-      4
-    ],
-    "output_dtype": "FLOAT32",
-    "classes": [
-      "NORMAL",
-      "EMP",
-      "OPTICAL",
-      "SURGE"
-    ]
+  "target_soc": "SM8750",
+  "htp_architecture": "HTP_V79",
+  "compiler_specification": {
+    "qnn_onnx_converter": "Required: Qualcomm AI Engine Direct SDK (qnn-onnx-converter)",
+    "qnn_model_lib_generator": "Required: Android NDK aarch64-android compiler (qnn-model-lib-generator)",
+    "qnn_context_binary_generator": "Required: Qualcomm HTP backend compiler (qnn-context-binary-generator)",
+    "status": "UNCOMPILED_TOOLS_MISSING",
+    "note": "Compilation requires official Qualcomm QAIRT SDK. Fake binary packaging is strictly disabled."
   },
-  "quantization": {
+  "onnx_source": {
+    "filename": "models/sparkshield_1d_cnn.onnx",
+    "sha256": "3da3baff5ec2859dd8d0031e69971cc9b92090d2515c8f640369cb4580801d60"
+  },
+  "tensor_specifications": {
+    "input_name": "input",
+    "input_shape": [1, 1, 128],
+    "input_dtype": "INT8 / FLOAT32",
+    "output_name": "logits",
+    "output_shape": [1, 4],
+    "output_dtype": "FLOAT32",
+    "classes": ["NORMAL", "EMP", "OPTICAL", "SURGE"]
+  },
+  "quantization_parameters": {
     "method": "Static Post-Training Quantization (PTQ)",
     "precision": "INT8 / UFIXEDPOINT_8",
-    "calibration_samples_evaluated": 200,
-    "htp_vector_width": "HVX 1024-bit",
-    "per_channel_weights": true
+    "calibration_samples": 200,
+    "quant_scale": 0.0039215686,
+    "quant_zero_point": 0,
+    "vector_width": "HVX 1024-bit"
   },
-  "sdk_environment": {
-    "tools_detected": {
-      "converter": false,
-      "lib_generator": false,
-      "context_generator": false
-    },
-    "qnn_onnx_converter": "NOT_DETECTED (Using standalone packager)",
-    "qnn_context_generator": "NOT_DETECTED (Using standalone packager)"
-  },
-  "recommended_sdk_command": "qnn-onnx-converter -i models/sparkshield_1d_cnn.onnx --input_list models/calibration/input_list.txt --output_path models/qnn_generated/sparkshield_model.cpp && qnn-model-lib-generator -c models/qnn_generated/sparkshield_model.cpp -t aarch64-android && qnn-context-binary-generator --model libsparkshield_model.so --backend libQnnHtp.so --output_dir assets/"
+  "production_fallback": {
+    "fallback_engine": "com.sparkshield.android.inference.CpuOnnxInferenceEngine",
+    "runtime": "ONNX Runtime Android 1.19.0",
+    "status": "ACTIVE_ON_NON_SNAPDRAGON_OR_UNCOMPILED"
+  }
 }

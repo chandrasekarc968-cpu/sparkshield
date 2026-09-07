@@ -124,5 +124,46 @@ class QnnHtpInferenceEngineTest {
         engine.close()
         engine.close() // Safe repeated close
         assertTrue(mockCpu.isClosed)
+        assertEquals("CLOSED", engine.qnnInitStatus)
+    }
+
+    @Test
+    fun testFallbackReasonAndDiagnostics() = runTest {
+        val mockCpu = MockCpuEngine()
+        val engine = QnnHtpInferenceEngine(
+            context = null,
+            cpuFallbackEngine = mockCpu,
+            forceCpuFallback = true
+        )
+
+        engine.load()
+        assertEquals("FALLBACK_CPU", engine.qnnInitStatus)
+        assertNotNull(engine.fallbackReason)
+        assertTrue(engine.fallbackReason!!.contains("explicitly requested"))
+
+        val input = FloatArray(128)
+        engine.infer(input)
+        assertEquals(1L, engine.fallbackExecutionCount)
+        assertEquals(0L, engine.htpExecutionCount)
+        assertEquals(0L, engine.errorCount)
+
+        engine.close()
+    }
+
+    @Test
+    fun testRepeatedLoadCycles() = runTest {
+        val mockCpu = MockCpuEngine()
+        val engine = QnnHtpInferenceEngine(
+            context = null,
+            cpuFallbackEngine = mockCpu,
+            forceCpuFallback = true
+        )
+
+        val load1 = engine.load()
+        assertTrue(load1.isSuccess)
+        val load2 = engine.load() // Idempotent load
+        assertTrue(load2.isSuccess)
+
+        engine.close()
     }
 }

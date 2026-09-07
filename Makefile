@@ -58,12 +58,36 @@ test-phase5:
 test-phase6:
 	$(PYTHON) tests/verify_phase6.py
 
+test-phase7:
+	$(PYTHON) tests/verify_phase7_qnn.py
+
+test-host:
+	$(PYTHON) -m pytest python_core/tests models/tests -v
+	$(PYTHON) tests/verify_android_parity.py
+	$(PYTHON) tests/verify_phase4.py
+	$(PYTHON) tests/verify_phase6.py
+	$(PYTHON) tests/verify_phase7_qnn.py
+
+test-virtual-ble:
+	$(PYTHON) -m pytest python_core/tests/test_ble_bumble.py -v
+	$(PYTHON) tests/verify_phase5_ble.py
+
+test-hardware-ble:
+	$(PYTHON) -m python_core.bumble_service --mode hardware --transport usb:0 --rate 10
+
+test-qnn-hardware:
+	$(PYTHON) tests/verify_phase7_qnn.py --hardware
+
+compile-qnn:
+	$(PYTHON) -m models.compile_qnn --soc SM8750 --htp-arch v79
+
 test-all:
 	$(PYTHON) -m pytest python_core/tests models/tests -v
 	$(PYTHON) tests/verify_android_parity.py
 	$(PYTHON) tests/verify_phase4.py
 	$(PYTHON) tests/verify_phase5_ble.py
 	$(PYTHON) tests/verify_phase6.py
+	$(PYTHON) tests/verify_phase7_qnn.py
 	cd dashboard && $(NPM) test
 
 run-ble-peripheral:

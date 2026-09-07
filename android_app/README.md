@@ -278,33 +278,37 @@ Configurable at runtime via Intent extra `SparkShieldMonitoringService.EXTRA_PRO
   ```
 ## 10. Qualcomm QNN / QAIRT Hexagon HTP NPU Acceleration (Phase 7)
 
-Phase 7 implements hardware acceleration on the Qualcomm Hexagon Tensor Processor (HTP) using Qualcomm AI Engine Direct (QNN / QAIRT):
+Phase 7 integrates hardware acceleration on the Qualcomm Hexagon Tensor Processor (HTP) using Qualcomm AI Engine Direct (QAIRT / QNN):
 
 ### Hardware & Architecture Target
-- **Target Backend**: Hexagon Tensor Processor (`QNN_BACKEND_HTP`, e.g. Snapdragon 8 Gen 2 / 8 Gen 3 / X Elite HTP architecture: `HTP_V73` / `HTP_V75`).
-- **Context Binary**: `app/src/main/assets/sparkshield_htp.bin` compiled from INT8 calibrated 1D CNN (`[1, 1, 128]` -> `[1, 4]`).
-- **Format**: Structured QNN context binary with 64-byte QNN header (`0x514E4E42`), graph manifest, weight segments, and quantized tensor descriptors.
+- **Target Platform**: Hexagon Tensor Processor (`QNN_BACKEND_HTP`), targeting Snapdragon 8 Elite (`SM8750` / `HTP v79`) alongside Snapdragon 8 Gen 3 (`SM8650` / `HTP v75`) and Snapdragon 8 Gen 2 (`SM8550` / `HTP v73`).
+- **Official Compilation Pipeline (`models/compile_qnn.py`)**:
+  - `qnn-onnx-converter`: Converts `sparkshield_1d_cnn.onnx` (`[1, 1, 128]` -> `[1, 4]`) using calibration data in `models/calibration/raw_tensors/`.
+  - `qnn-model-lib-generator`: Compiles model C++ for `aarch64-android`.
+  - `qnn-context-binary-generator`: Generates serialized `sparkshield_htp.bin` using `libQnnHtp.so`.
+  - Strictly requires official Qualcomm QAIRT tools; fake context container packaging is disabled.
 
 ### Native JNI / NDK Bridge
 - **Native Implementation**: `app/src/main/cpp/qnn_inference_jni.cpp` and `app/src/main/cpp/QnnApi.h`.
-- **Zero-Copy Direct ByteBuffer**: Direct ByteBuffer passing between Kotlin and C++ avoids JNI array copies and achieves sub-500 µs execution latency.
-- **Dynamic Symbol Loading**: Uses runtime dynamic symbol resolution (`dlopen("libQnnHtp.so")`) to ensure the application builds and runs cleanly on any Android device without crashing when QNN libraries are not present in the system image.
+- **Dynamic Symbol Loading**: Uses runtime dynamic symbol resolution (`dlopen("libQnnHtp.so")`) and checks FastRPC driver nodes (`/dev/fastrpc-cdsp`, `/dev/adsprpc-smd`).
+- **Zero Heuristics**: Executes genuine materialized QNN graphs via `QnnGraph_execute`.
+- **Zero-Copy Direct ByteBuffer**: Direct ByteBuffer passing between Kotlin and C++ avoids JNI array copies and minimizes JNI marshaling overhead.
 
 ### Pluggable InferenceEngine & Graceful Fallback
 - **`QnnHtpInferenceEngine`**: Implements the standard `InferenceEngine` interface:
-  - `load()`: Loads QNN HTP runtime libraries (`libQnnHtp.so`, `libQnnSystem.so`) and initializes the model context. If QNN or HTP hardware is unavailable, automatically initializes `CpuOnnxInferenceEngine` as a fallback delegate.
+  - `load()`: Attempts to load QNN runtime and context binary. If QNN libraries, FastRPC drivers, or context binaries are unavailable, automatically initializes `CpuOnnxInferenceEngine` as a fallback delegate.
   - `infer(featureTensor)`: Executes inference via direct buffer on Hexagon HTP (or CPU fallback) and returns classification, confidence, class index, probabilities, and execution latency in microseconds.
-  - `close()`: Releases QNN context, graph handles, and HTP accelerator resources safely.
-- **Observable Status**: Exposed through `MonitoringState.accelerator` ("Hexagon HTP (QNN)" vs "CPU (ONNX)") and rendered on `MainActivity`.
+  - `close()`: Safely releases QNN context, graph handles, and HTP accelerator resources.
+- **Observable Status**: Exposed through `MonitoringState.accelerator` ("Hexagon HTP (QNN)" vs "CPU (ONNX)"), `MonitoringState.qnnInitStatus`, and `MonitoringState.fallbackReason`.
 
 ### NDK Build Instructions
 1. Ensure Android NDK (r25c or newer) and CMake (3.22.1+) are installed via Android SDK Manager.
-2. The Gradle build automatically compiles the native bridge via `externalNativeBuild`:
+2. The Gradle build compiles the native bridge via `externalNativeBuild`:
    ```bash
    cd android_app
    ./gradlew assembleDebug
    ```
-3. Target ABIs: `arm64-v8a` (required for 64-bit Hexagon HTP), with `armeabi-v7a` and `x86_64` for emulators/development.
+3. Target ABIs: `arm64-v8a` (production target for 64-bit Hexagon HTP).
 
 ---
 
@@ -316,4 +320,4 @@ Phase 7 implements hardware acceleration on the Qualcomm Hexagon Tensor Processo
 - **Phase 4**: WebSocket Publisher & Real-time Web Dashboard (Complete)
 - **Phase 5**: BLE GATT Peripheral & Android BleTelemetryProvider (Complete)
 - **Phase 6**: Room Persistence (Schema v2) & Node-RED Automation (Complete)
-- **Phase 7**: Qualcomm QNN / QAIRT Hexagon HTP NPU Hardware Acceleration (Complete)
+- **Phase 7**: Qualcomm QNN / QAIRT Hexagon HTP Integration (Host & Fallback Complete; Physical Hardware Execution Gated on Silicon)

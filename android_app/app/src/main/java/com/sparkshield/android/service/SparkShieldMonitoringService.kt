@@ -135,13 +135,20 @@ class SparkShieldMonitoringService(
             val loadResult = inferenceEngine.load()
             val isLoaded = loadResult.isSuccess
             val loadError = loadResult.exceptionOrNull()?.message
-            val acceleratorName = (inferenceEngine as? QnnHtpInferenceEngine)?.activeAccelerator ?: "CPU (ONNX)"
+            val qnnEngine = inferenceEngine as? QnnHtpInferenceEngine
+            val acceleratorName = qnnEngine?.activeAccelerator ?: "CPU (ONNX)"
+            val qnnStatus = qnnEngine?.qnnInitStatus ?: if (isLoaded) "READY_CPU" else "FAILED"
+            val fallback = qnnEngine?.fallbackReason
+            val ctxHash = qnnEngine?.modelContextHash
 
             _serviceState.update {
                 it.copy(
                     isModelLoaded = isLoaded,
                     modelLoadError = loadError,
-                    accelerator = acceleratorName
+                    accelerator = acceleratorName,
+                    qnnInitStatus = qnnStatus,
+                    fallbackReason = fallback,
+                    contextHash = ctxHash
                 )
             }
 

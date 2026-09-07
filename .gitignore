@@ -13,6 +13,7 @@ artifacts/
 !android_app/app/src/main/assets/*.bin
 *.npy
 *.npz
+!models/validation/*.npz
 models/calibration/raw_tensors/
 models/test_data.npz
 models/sparkshield_1d_cnn.pt

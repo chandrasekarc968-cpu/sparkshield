@@ -1,0 +1,24 @@
+{
+  "dataset_name": "validation_set_v1",
+  "filename": "validation_set_v1.npz",
+  "sha256": "cae09f5b0ae0239f164767f4669fe6bb97c73775486a08d90537ec159c8355f3",
+  "total_samples": 400,
+  "samples_per_class": 100,
+  "tensor_shape": [
+    400,
+    1,
+    128
+  ],
+  "classes": {
+    "0": "NORMAL",
+    "1": "EMP",
+    "2": "OPTICAL",
+    "3": "SURGE"
+  },
+  "statistics": {
+    "min": 0.0,
+    "max": 0.9960784316062927,
+    "mean": 0.24615487456321716,
+    "std": 0.35885873436927795
+  }
+}

@@ -45,7 +45,10 @@ data class MonitoringState(
     val bleRssi: Int? = null,
     val persistedTamperEvents: Long = 0L,
     val persistedSnapshots: Long = 0L,
-    val accelerator: String = "CPU (ONNX)"
+    val accelerator: String = "CPU (ONNX)",
+    val qnnInitStatus: String = "UNINITIALIZED",
+    val fallbackReason: String? = null,
+    val contextHash: String? = null
 ) {
     val latencyMs: Float
         get() = inferenceLatencyUs / 1000.0f
@@ -81,6 +84,9 @@ data class MonitoringState(
         if (persistedTamperEvents != other.persistedTamperEvents) return false
         if (persistedSnapshots != other.persistedSnapshots) return false
         if (accelerator != other.accelerator) return false
+        if (qnnInitStatus != other.qnnInitStatus) return false
+        if (fallbackReason != other.fallbackReason) return false
+        if (contextHash != other.contextHash) return false
         return true
     }
 
@@ -111,6 +117,9 @@ data class MonitoringState(
         result = 31 * result + persistedTamperEvents.hashCode()
         result = 31 * result + persistedSnapshots.hashCode()
         result = 31 * result + accelerator.hashCode()
+        result = 31 * result + qnnInitStatus.hashCode()
+        result = 31 * result + (fallbackReason?.hashCode() ?: 0)
+        result = 31 * result + (contextHash?.hashCode() ?: 0)
         return result
     }
 }

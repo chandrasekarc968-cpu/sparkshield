@@ -28,7 +28,8 @@ import kotlin.concurrent.thread
  * - Clean shutdown without resource leaks
  */
 class WebSocketServer(
-    val port: Int = 8765
+    val port: Int = 8765,
+    val host: String = "127.0.0.1"
 ) {
     private val tag = "SparkShieldWS"
     private val isRunning = AtomicBoolean(false)
@@ -42,14 +43,15 @@ class WebSocketServer(
         get() = activeClients.size
 
     /**
-     * Starts the WebSocket server listening on the configured port.
+     * Starts the WebSocket server listening on the configured host and port.
      */
     @Synchronized
     fun start(): Boolean {
         if (isRunning.get()) return true
 
         return try {
-            val socket = ServerSocket(port)
+            val bindAddr = java.net.InetAddress.getByName(host)
+            val socket = ServerSocket(port, 50, bindAddr)
             socket.reuseAddress = true
             serverSocket = socket
             isRunning.set(true)
@@ -57,7 +59,7 @@ class WebSocketServer(
             listenerThread = thread(name = "SparkShield-WS-Listener", isDaemon = true) {
                 acceptLoop(socket)
             }
-            Log.i(tag, "WebSocket server started on port $port")
+            Log.i(tag, "WebSocket server started on $host:$port")
             true
         } catch (e: Exception) {
             Log.e(tag, "Failed to start WebSocket server on port $port: ${e.message}", e)

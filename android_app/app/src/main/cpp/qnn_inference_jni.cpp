@@ -6,18 +6,19 @@
 extern "C" {
 
 /**
- * Probes whether the device has a Qualcomm Hexagon Tensor Processor (HTP) available.
+ * Probes whether the device has a Qualcomm Hexagon Tensor Processor (HTP) available
+ * via FastRPC driver nodes (/dev/fastrpc-cdsp, /dev/adsprpc-smd) and libQnnHtp.so.
  */
 JNIEXPORT jboolean JNICALL
 Java_com_sparkshield_android_inference_QnnHtpInferenceEngine_nativeIsHtpSupported(
-        JNIEnv* env,
+        JNIEnv* /* env */,
         jclass /* clazz */) {
     QnnHtpBackend probe;
     return static_cast<jboolean>(probe.isHtpSupported());
 }
 
 /**
- * Initializes the QNN HTP context from the binary buffer loaded from assets.
+ * Initializes the QNN HTP context from the serialized binary buffer.
  * Returns a pointer handle to the allocated QnnHtpBackend instance, or 0 on failure.
  */
 JNIEXPORT jlong JNICALL
@@ -27,29 +28,36 @@ Java_com_sparkshield_android_inference_QnnHtpInferenceEngine_nativeInit(
         jobject contextBuffer,
         jint bufferSize) {
     if (contextBuffer == nullptr || bufferSize <= 0) {
-        LOGE("Invalid context buffer passed to nativeInit");
+        LOGE("nativeInit: Invalid contextBuffer or bufferSize=%d", bufferSize);
         return 0;
     }
 
     auto* bufferPtr = static_cast<const uint8_t*>(env->GetDirectBufferAddress(contextBuffer));
     if (bufferPtr == nullptr) {
-        LOGE("Failed to get direct buffer address for context binary");
+        LOGE("nativeInit: GetDirectBufferAddress returned null");
+        return 0;
+    }
+
+    jlong bufferCapacity = env->GetDirectBufferCapacity(contextBuffer);
+    if (bufferCapacity < bufferSize) {
+        LOGE("nativeInit: Buffer capacity (%lld) < bufferSize (%d)", static_cast<long long>(bufferCapacity), bufferSize);
         return 0;
     }
 
     auto backend = std::make_unique<QnnHtpBackend>();
     if (!backend->initializeFromBinary(bufferPtr, static_cast<size_t>(bufferSize))) {
-        LOGE("Failed to initialize QNN HTP context from binary buffer");
+        LOGW("nativeInit: Failed to materialize genuine QNN graph on Hexagon HTP. Clean fallback will occur.");
         return 0;
     }
 
-    LOGI("QNN HTP execution context initialized successfully.");
+    LOGI("nativeInit: Qualcomm Hexagon HTP execution backend initialized successfully.");
     return reinterpret_cast<jlong>(backend.release());
 }
 
 /**
  * Executes tensor inference on the Hexagon HTP backend using Direct ByteBuffers.
- * Returns the execution latency in microseconds, or -1 on failure.
+ * Strictly validates buffer sizes (128 floats input, 4 floats output).
+ * Returns execution latency in microseconds, or negative error code on failure.
  */
 JNIEXPORT jlong JNICALL
 Java_com_sparkshield_android_inference_QnnHtpInferenceEngine_nativeInfer(
@@ -59,36 +67,50 @@ Java_com_sparkshield_android_inference_QnnHtpInferenceEngine_nativeInfer(
         jobject inputBuf,
         jobject outputBuf) {
     if (handle == 0) {
-        LOGE("Null backend handle passed to nativeInfer");
+        LOGE("nativeInfer: Null backend handle passed");
         return -1;
     }
 
-    auto* backend = reinterpret_cast<QnnHtpBackend*>(handle);
+    if (inputBuf == nullptr || outputBuf == nullptr) {
+        LOGE("nativeInfer: Null input/output buffer");
+        return -2;
+    }
+
+    jlong inCapacity = env->GetDirectBufferCapacity(inputBuf);
+    jlong outCapacity = env->GetDirectBufferCapacity(outputBuf);
+
+    if (inCapacity < static_cast<jlong>(128 * sizeof(float)) ||
+        outCapacity < static_cast<jlong>(4 * sizeof(float))) {
+        LOGE("nativeInfer: Insufficient direct buffer capacity: in=%lld, out=%lld",
+             static_cast<long long>(inCapacity), static_cast<long long>(outCapacity));
+        return -3;
+    }
 
     auto* inPtr = static_cast<const float*>(env->GetDirectBufferAddress(inputBuf));
     auto* outPtr = static_cast<float*>(env->GetDirectBufferAddress(outputBuf));
 
     if (inPtr == nullptr || outPtr == nullptr) {
-        LOGE("Failed to retrieve direct buffer addresses for input/output");
-        return -1;
+        LOGE("nativeInfer: Failed to get DirectBuffer address");
+        return -4;
     }
 
+    auto* backend = reinterpret_cast<QnnHtpBackend*>(handle);
     int64_t latencyUs = backend->execute(inPtr, outPtr, 128, 4);
     return static_cast<jlong>(latencyUs);
 }
 
 /**
- * Releases QNN context and backend resources.
+ * Releases QNN context, graph, and backend resources safely.
  */
 JNIEXPORT void JNICALL
 Java_com_sparkshield_android_inference_QnnHtpInferenceEngine_nativeClose(
-        JNIEnv* env,
+        JNIEnv* /* env */,
         jobject /* thiz */,
         jlong handle) {
     if (handle != 0) {
         auto* backend = reinterpret_cast<QnnHtpBackend*>(handle);
         delete backend;
-        LOGI("QNN HTP backend released successfully.");
+        LOGI("nativeClose: QNN HTP backend released successfully.");
     }
 }
 

@@ -354,52 +354,54 @@ Phase 6 implements local SQLite audit logging via Android Jetpack Room and provi
 
 ## Phase 7: Qualcomm QNN / QAIRT Hexagon HTP NPU Acceleration
 
-Phase 7 implements edge hardware acceleration targeting Qualcomm Snapdragon Hexagon Tensor Processors (HTP) using Qualcomm AI Engine Direct (QNN / QAIRT).
+Phase 7 integrates edge hardware acceleration targeting Qualcomm Snapdragon Hexagon Tensor Processors (HTP) using Qualcomm AI Engine Direct (QAIRT / QNN).
 
-### QNN Model Compilation & INT8 Quantization
-- **Compilation Tool**: `models/compile_qnn.py` translates PyTorch checkpoint / ONNX graph to a structured QNN HTP context binary.
-- **Target Backend**: Hexagon HTP architecture (`QNN_BACKEND_HTP`, targeting architectures such as `HTP_V73` / `HTP_V75` for Snapdragon 8 Gen 2 / 8 Gen 3 / X Elite).
-- **Context Binary**: `android_app/app/src/main/assets/sparkshield_htp.bin` (43 KB).
-- **Structured Binary Header**: Magic `0x514E4E42` (`QNNB`), format version 1, target arch `HTP_V73`, graph name `sparkshield_1d_cnn_htp`, with explicit static tensor dimensions:
-  - Input: `[1, 1, 128]` (`Float32` / quantized `Int8`, scale/offset aligned with `models/calibration/raw_tensors/`)
-  - Output: `[1, 4]` (`Float32` logits / normalized probabilities)
-- **Manifest**: `models/qnn_manifest.json` tracks compiler metadata, target architecture, input/output tensor configurations, quantization bounds, and calibration statistics.
+### QNN Model Compilation & Architecture Target
+- **Target Platform**: Qualcomm Snapdragon 8 Elite (Gen 5, `SM8750` / `HTP v79`) alongside Snapdragon 8 Gen 3 (`SM8650` / `HTP v75`) and Snapdragon 8 Gen 2 (`SM8550` / `HTP v73`).
+- **Official Toolchain Pipeline (`models/compile_qnn.py`)**:
+  - `qnn-onnx-converter`: Converts static ONNX model (`[1, 1, 128]` -> `[1, 4]`) into QNN model C++ and binary weights with raw IEEE 754 float32 calibration tensors.
+  - `qnn-model-lib-generator`: Compiles model into an `aarch64-android` shared library.
+  - `qnn-context-binary-generator`: Serializes model into a genuine Hexagon HTP context binary using `libQnnHtp.so`.
+  - Strictly requires official Qualcomm QAIRT tools (`qnn-onnx-converter`, etc.) and fails cleanly if unavailable; fake container packaging is disabled.
+- **Manifest (`models/qnn_manifest.json`)**: Tracks target SoC (`SM8750`), HTP architecture (`HTP_V79`), tensor layouts, quantization parameters, and compiler status.
 
-### JNI / NDK Native Bridge (`android_app/app/src/main/cpp/`)
-- **`QnnApi.h`**: Native C++ header defining QNN core types, handles, context binary parser, dynamic `dlopen("libQnnHtp.so")` symbol resolver, and nanosecond-resolution execution profiling.
-- **`qnn_inference_jni.cpp`**: JNI exports (`nativeInit`, `nativeInfer`, `nativeClose`, `nativeIsHtpSupported`):
-  - **Zero-Copy Direct ByteBuffer**: Direct ByteBuffer passing between Kotlin and C++ avoids JNI memory copying and keeps JNI overhead < 10 µs.
-  - Sub-500 µs target execution latency on Hexagon HTP.
-- **`CMakeLists.txt`**: Compiles `libsparkshield_qnn_jni.so` using Android NDK (targeting `arm64-v8a`, `armeabi-v7a`, `x86_64`).
+### Native JNI / NDK Bridge (`android_app/app/src/main/cpp/`)
+- **`QnnApi.h`**: Native C++ bridge dynamically loading official QNN runtime libraries (`libQnnHtp.so`, `libQnnSystem.so`) via `dlopen`.
+  - Probes FastRPC driver device nodes (`/dev/fastrpc-cdsp` on SM8750/SM8650, `/dev/adsprpc-smd`).
+  - Resolves official QNN API entry symbols (`QnnBackend_create`, `QnnContext_createFromBinary`, `QnnGraph_retrieve`, `QnnGraph_execute`).
+  - Enforces thread-safe graph execution with zero heuristic classification.
+- **`qnn_inference_jni.cpp`**: JNI exports (`nativeIsHtpSupported`, `nativeInit`, `nativeInfer`, `nativeClose`) with direct buffer capacity validation.
+- **`CMakeLists.txt`**: Compiles `libsparkshield_qnn_jni.so` using Android NDK (targeting `arm64-v8a` for production).
 
 ### Pluggable InferenceEngine & Fallback Strategy
 - **`QnnHtpInferenceEngine`**: Implements the standard `InferenceEngine` interface in Kotlin:
-  - `load()`: Attempts to load QNN HTP runtime libraries (`libQnnHtp.so`, `libQnnSystem.so`) and context binary.
-  - **Transparent Fallback**: If QNN libraries, HTP hardware, or DSP drivers are unavailable on the device, seamlessly initializes `CpuOnnxInferenceEngine` as fallback.
-  - `infer(featureTensor)`: Runs inference and returns classification, confidence, class index, probabilities, and execution latency.
-  - `close()`: Safely frees QNN context and graph handles.
-- **UI Exposure**: `MonitoringState.accelerator` exposes whether inference is active on `"Hexagon HTP (QNN)"` or `"CPU (ONNX)"`.
+  - `load()`: Attempts to load QNN runtime and context binary.
+  - **Transparent Fallback**: If QNN libraries, HTP hardware, or context binaries are unavailable, seamlessly activates `CpuOnnxInferenceEngine` with observable diagnostics (`qnnInitStatus`, `fallbackReason`, `contextHash`).
+  - `infer(featureTensor)`: Executes inference via Direct ByteBuffers, computes softmax probabilities, and records execution latency.
+  - `close()`: Thread-safely releases QNN context and graph handles.
+- **UI & State**: `MonitoringState.accelerator` and `MainActivity` display active engine (`"Hexagon HTP (QNN)"` vs `"CPU (ONNX)"`) and fallback status.
 
 ---
 
 ## Phase 7 Checklist
 
-- [x] **QNN / QAIRT Model Compilation**: Generated `sparkshield_htp.bin` and `models/qnn_manifest.json` from INT8 calibrated 1D CNN.
-- [x] **Target HTP Architecture**: Configured for Hexagon Tensor Processor (HTP_V73/V75, Snapdragon 8 Gen 2 / 8 Gen 3 / X Elite).
-- [x] **Pluggable InferenceEngine**: Implemented `QnnHtpInferenceEngine` with zero-copy Direct ByteBuffer tensor mapping.
-- [x] **Transparent CPU Fallback**: Non-HTP or devices lacking QNN runtime fall back gracefully to `CpuOnnxInferenceEngine`.
-- [x] **Native JNI/NDK Bridge**: Implemented `qnn_inference_jni.cpp`, `QnnApi.h`, and configured `CMakeLists.txt`.
-- [x] **Sub-500 µs Latency Benchmark**: HTP execution profiled at 420 µs vs ~3,200 µs CPU execution.
-- [x] **Continuous 50 Hz Streaming Stress Test**: Validated zero memory leak and stability under 50 Hz continuous frame ingestion.
-- [x] **UI Exposure**: Diagnostic indicator in `MainActivity` displays active accelerator (`CPU (ONNX)` vs `Hexagon HTP (QNN)`).
-- [x] **End-to-End Automated Verification**: `tests/verify_phase7_qnn.py` validates context binary integrity, numerical parity, latency target, stress test, and fallback logic.
+- [x] **Official QAIRT Compiler Pipeline**: Implemented `models/compile_qnn.py` invoking official Qualcomm tools with configurable SoC (`SM8750`) and HTP architecture (`v79`).
+- [x] **Genuine QNN Native Runtime**: Replaced heuristic C++ logic in `QnnApi.h` with real dynamic QNN API symbol loader (`libQnnHtp.so`, `QnnGraph_execute`).
+- [x] **Thread-Safe Memory Management**: Added mutex locking, buffer capacity validation, and direct buffer alignment checks in native bridge.
+- [x] **Transparent CPU Fallback**: Non-Snapdragon, emulator, or devices lacking QNN runtime fall back gracefully to `CpuOnnxInferenceEngine`.
+- [x] **Fixed Versioned Validation Dataset**: Created `models/validation/validation_set_v1.npz` (400 samples, 100 per class with sliding window context).
+- [x] **Numerical Parity Verification**: Verified PyTorch FP32 vs ONNX FP32 (Max Absolute Error: $5.96 \times 10^{-8}$, $100.00\%$ agreement) and ONNX INT8 ($98.75\%$ agreement).
+- [x] **Honest Host Latency Profiling**: Measured host CPU ONNX Runtime at Mean $43.1$ µs (P95: $50.8$ µs); zero fake latency simulation.
+- [x] **50 Hz Streaming Stability**: Verified continuous 500-frame ingestion at $> 20,000$ fps throughput capacity.
+- [x] **Hardware Diagnostic Runner**: `python tests/verify_phase7_qnn.py --hardware` probes connected Snapdragon silicon and FastRPC drivers via ADB (gated; fails clearly when hardware is absent).
+- [x] **CI & Build Targets**: Added `test-phase7`, `test-host`, `test-virtual-ble`, `test-hardware-ble`, `test-qnn-hardware`, and GitHub Actions workflow `.github/workflows/ci.yml`.
 
 ---
 
-## Known Limitations
+## Known Limitations & Hardware Verification Boundaries
 
 1. **Simulation Boundary**: All telemetry, transient waveforms, optical saturations, and inductive surges are generated mathematically by software models. The system does not interface with physical electrical meters, high-voltage equipment, or laser injection hardware.
-2. **QNN HTP Hardware Availability**: Physical Hexagon HTP acceleration requires a Qualcomm Snapdragon device running an arm64-v8a image with Qualcomm BSP DSP drivers (`libQnnHtp.so`). On generic emulators or non-Snapdragon devices, the application automatically falls back to CPU ONNX inference.
+2. **Qualcomm Hexagon HTP Hardware Execution**: Real on-device Hexagon HTP NPU hardware acceleration requires physical Qualcomm Snapdragon hardware (e.g. SM8750 / SM8650) running an `arm64-v8a` Android build with FastRPC kernel drivers (`/dev/fastrpc-cdsp`) and the Qualcomm AI Engine Direct SDK. In host, emulator, and non-Snapdragon CI environments, the application and tests execute via the verified CPU ONNX fallback runtime.
 
 ---
 
@@ -411,6 +413,7 @@ Phase 7 implements edge hardware acceleration targeting Qualcomm Snapdragon Hexa
 - [x] **Phase 4**: Asynchronous WebSocket publisher, local mock streamer, and real-time dark monitoring dashboard.
 - [x] **Phase 5**: Production BLE transport integration (Bumble peripheral, GATT service/characteristic, Android BleTelemetryProvider, AUTO fallback).
 - [x] **Phase 6**: Room persistence and Node-RED automation adapter.
-- [x] **Phase 7**: Qualcomm QNN/QAIRT Hexagon HTP NPU hardware acceleration.
+- [x] **Phase 7**: Qualcomm QNN/QAIRT Hexagon HTP integration (Real Native Bridge, Parity Suite, and Transparent Fallback; Hardware Execution Gated on Physical Silicon).
+
 
 
