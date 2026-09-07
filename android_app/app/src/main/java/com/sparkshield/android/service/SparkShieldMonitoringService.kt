@@ -6,18 +6,20 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import android.os.PowerManager
 import com.sparkshield.android.features.FeatureExtractor
 import com.sparkshield.android.inference.ClassLabels
 import com.sparkshield.android.inference.CpuOnnxInferenceEngine
 import com.sparkshield.android.inference.InferenceEngine
+import com.sparkshield.android.inference.InferenceResult
 import com.sparkshield.android.protocol.ProtocolResult
+import com.sparkshield.android.protocol.SequenceStatus
 import com.sparkshield.android.protocol.SequenceTracker
 import com.sparkshield.android.protocol.TelemetryFrameParser
 import com.sparkshield.android.transport.MockTelemetryProvider
 import com.sparkshield.android.transport.TelemetryProvider
 import com.sparkshield.android.ui.MonitoringState
 import com.sparkshield.android.ui.TamperEvent
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -26,6 +28,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -33,12 +36,16 @@ import kotlinx.coroutines.launch
  * Android Foreground Service (connectedDevice) executing real-time smart-meter
  * telemetry frame parsing, feature extraction, edge neural network inference,
  * and confidence-gated tamper alerting.
+ *
+ * SIMULATION ONLY:
+ * Does not hold a wake lock by default. Processes all frames on Dispatchers.Default.
  */
-class SparkShieldMonitoringService : Service() {
+class SparkShieldMonitoringService(
+    private val backgroundDispatcher: CoroutineDispatcher = Dispatchers.Default
+) : Service() {
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val serviceScope = CoroutineScope(SupervisorJob() + backgroundDispatcher)
     private var processingJob: Job? = null
-    private var wakeLock: PowerManager.WakeLock? = null
 
     private lateinit var notificationHelper: NotificationHelper
     private lateinit var telemetryProvider: TelemetryProvider
@@ -47,29 +54,27 @@ class SparkShieldMonitoringService : Service() {
     private lateinit var sequenceTracker: SequenceTracker
     private lateinit var alertGate: AlertGate
 
+    // Dedicated metrics counters
+    private var receivedFramesCount: Long = 0L
+    private var validFramesCount: Long = 0L
+    private var invalidFramesCount: Long = 0L
+    private var droppedFramesCount: Long = 0L
+    private var inferredFramesCount: Long = 0L
+    private var tamperAlertsCount: Long = 0L
+
     override fun onCreate() {
         super.onCreate()
 
         notificationHelper = NotificationHelper(this)
         featureExtractor = FeatureExtractor()
         sequenceTracker = SequenceTracker()
-        alertGate = AlertGate()
+        alertGate = AlertGate(confidenceThreshold = 0.85f, cooldownMs = 5000L)
 
-        // Decoupled architecture: Mock provider for Phase 3
-        telemetryProvider = MockTelemetryProvider(rateHz = 10.0f)
-        inferenceEngine = CpuOnnxInferenceEngine()
+        // Decoupled architecture: Mock provider for simulation
+        telemetryProvider = MockTelemetryProvider(intervalMs = 100L)
+        inferenceEngine = CpuOnnxInferenceEngine(context = applicationContext)
 
-        // Acquire partial wake lock to guarantee continuous edge monitoring
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "SparkShield::MonitoringWakeLock"
-        ).apply {
-            setReferenceCounted(false)
-            acquire(10 * 60 * 1000L) // 10 minutes timeout safety
-        }
-
-        // Promote to foreground service immediately
+        // Start ongoing foreground notification
         val initialNotification = notificationHelper.buildForegroundNotification("Initializing edge inference engine...")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
@@ -82,7 +87,17 @@ class SparkShieldMonitoringService : Service() {
         }
 
         serviceScope.launch {
-            inferenceEngine.initialize(applicationContext)
+            val loadResult = inferenceEngine.load()
+            val isLoaded = loadResult.isSuccess
+            val loadError = loadResult.exceptionOrNull()?.message
+
+            _serviceState.update {
+                it.copy(
+                    isModelLoaded = isLoaded,
+                    modelLoadError = loadError
+                )
+            }
+
             startProcessingPipeline()
         }
     }
@@ -96,12 +111,11 @@ class SparkShieldMonitoringService : Service() {
             }
             ACTION_TRIGGER_TAMPER -> {
                 val classId = intent.getIntExtra(EXTRA_TAMPER_CLASS_ID, ClassLabels.EMP.id)
-                val count = intent.getIntExtra(EXTRA_TAMPER_BURST_COUNT, 5)
+                val count = intent.getIntExtra(EXTRA_TAMPER_BURST_COUNT, 8)
                 val tamperClass = ClassLabels.fromId(classId)
                 (telemetryProvider as? MockTelemetryProvider)?.triggerTamper(tamperClass, count)
             }
             else -> {
-                // Default: ACTION_START or service restart
                 _serviceState.update { it.copy(isServiceRunning = true) }
             }
         }
@@ -111,7 +125,10 @@ class SparkShieldMonitoringService : Service() {
     private fun startProcessingPipeline() {
         if (processingJob?.isActive == true) return
 
-        telemetryProvider.start()
+        serviceScope.launch {
+            telemetryProvider.start()
+        }
+
         _serviceState.update {
             it.copy(
                 isServiceRunning = true,
@@ -120,88 +137,130 @@ class SparkShieldMonitoringService : Service() {
         }
 
         processingJob = serviceScope.launch {
-            telemetryProvider.rawFrameFlow.collect { rawBytes ->
-                when (val parseResult = TelemetryFrameParser.parse(rawBytes)) {
-                    is ProtocolResult.Success -> {
-                        val frame = parseResult.frame
-                        val seqStatus = sequenceTracker.process(frame.sequenceId)
-
-                        // 1. Sliding window feature extraction (128 floats)
-                        val featureTensor = featureExtractor.update(frame)
-
-                        // 2. Only execute edge neural network inference when at least 8 frames are accumulated
-                        // (unless warm-up mode is explicitly enabled)
-                        val inferenceResult = if (featureExtractor.isReadyForInference) {
-                            inferenceEngine.predict(featureTensor)
-                        } else {
-                            InferenceResult(
-                                predictedClass = ClassLabels.NORMAL,
-                                confidence = 1.0f,
-                                probabilities = floatArrayOf(1.0f, 0.0f, 0.0f, 0.0f),
-                                latencyMs = 0.0f
-                            )
-                        }
-
-                        // 3. Confidence-gated alert decision (>= 0.85, rate-limited, strictly when ready)
-                        val alertDecision = if (featureExtractor.isReadyForInference) {
-                            alertGate.evaluate(inferenceResult)
-                        } else {
-                            AlertGate.AlertDecision.Suppressed(AlertGate.SuppressionReason.NORMAL_CLASS)
-                        }
-
-                        var newTamperEvent: TamperEvent? = null
-                        if (alertDecision is AlertGate.AlertDecision.TriggerAlert) {
-                            notificationHelper.postTamperAlert(
-                                alertDecision.tamperClass,
-                                alertDecision.confidence
-                            )
-                            newTamperEvent = TamperEvent(
-                                timestampMs = alertDecision.timestampMs,
-                                tamperClass = alertDecision.tamperClass,
-                                confidence = alertDecision.confidence
-                            )
-                        }
-
-                        // 4. Update observable UI state
-                        _serviceState.update { current ->
-                            val updatedLog = if (newTamperEvent != null) {
-                                (listOf(newTamperEvent) + current.tamperAlertLog).take(20)
-                            } else {
-                                current.tamperAlertLog
-                            }
-
-                            current.copy(
-                                currentSequenceId = frame.sequenceId,
-                                timestampMs = frame.timestampMs,
-                                peakVoltageV = frame.peakV,
-                                opticalSensorV = frame.opticalSensorV,
-                                riseTimeNs = frame.riseTimeNs,
-                                decayTimeMs = frame.decayTimeMs,
-                                predictedClass = inferenceResult.predictedClass,
-                                confidence = inferenceResult.confidence,
-                                probabilities = inferenceResult.probabilities,
-                                latencyMs = inferenceResult.latencyMs,
-                                framesReceived = sequenceTracker.totalReceived,
-                                framesDropped = sequenceTracker.totalDropped,
-                                lastTamperClass = if (newTamperEvent != null) newTamperEvent.tamperClass else current.lastTamperClass,
-                                lastTamperTimestamp = if (newTamperEvent != null) newTamperEvent.timestampMs else current.lastTamperTimestamp,
-                                lastTamperConfidence = if (newTamperEvent != null) newTamperEvent.confidence else current.lastTamperConfidence,
-                                tamperAlertLog = updatedLog
-                            )
-                        }
-                    }
-                    is ProtocolResult.Failure -> {
-                        // Dropped or corrupted frame
+            telemetryProvider.frames
+                .catch { cause ->
+                    // Handle provider failures gracefully without crashing service
+                    _serviceState.update { current ->
+                        current.copy(latestProtocolError = "Provider stream error: ${cause.message}")
                     }
                 }
-            }
+                .collect { rawBytes ->
+                    receivedFramesCount++
+
+                    when (val parseResult = TelemetryFrameParser.parse(rawBytes)) {
+                        is ProtocolResult.Success -> {
+                            validFramesCount++
+                            val frame = parseResult.value
+
+                            // Sequence tracking & dropped packet calculation
+                            when (val seqStatus = sequenceTracker.process(frame.sequenceId)) {
+                                is SequenceStatus.Gap -> {
+                                    droppedFramesCount += seqStatus.droppedCount
+                                }
+                                else -> {}
+                            }
+
+                            // 1. Sliding window feature extraction (128 floats)
+                            val featureTensor = featureExtractor.update(frame)
+
+                            // 2. Execute inference only when at least 8 frames are available (or warmup mode)
+                            val inferenceResult: InferenceResult
+                            if (featureExtractor.isReadyForInference && _serviceState.value.isModelLoaded) {
+                                val inferResult = inferenceEngine.infer(featureTensor)
+                                if (inferResult.isSuccess) {
+                                    inferenceResult = inferResult.getOrThrow()
+                                    inferredFramesCount++
+                                } else {
+                                    inferenceResult = InferenceResult(
+                                        label = "NORMAL",
+                                        classIndex = 0,
+                                        probabilities = floatArrayOf(1.0f, 0.0f, 0.0f, 0.0f),
+                                        confidence = 1.0f,
+                                        inferenceTimeUs = 0L
+                                    )
+                                }
+                            } else {
+                                inferenceResult = InferenceResult(
+                                    label = "NORMAL (WARMING UP)",
+                                    classIndex = 0,
+                                    probabilities = floatArrayOf(1.0f, 0.0f, 0.0f, 0.0f),
+                                    confidence = 1.0f,
+                                    inferenceTimeUs = 0L
+                                )
+                            }
+
+                            // 3. Confidence-gated alert decision (>= 0.85, 5s rate limiting, reset on NORMAL)
+                            var newTamperEvent: TamperEvent? = null
+                            if (featureExtractor.isReadyForInference) {
+                                when (val decision = alertGate.evaluate(inferenceResult)) {
+                                    is AlertGate.AlertDecision.TriggerAlert -> {
+                                        tamperAlertsCount++
+                                        notificationHelper.postTamperAlert(decision)
+                                        newTamperEvent = TamperEvent(
+                                            timestampMs = decision.timestampMs,
+                                            tamperClass = decision.tamperClass,
+                                            confidence = decision.confidence,
+                                            message = decision.alertMessage
+                                        )
+                                    }
+                                    is AlertGate.AlertDecision.Suppressed -> {}
+                                }
+                            }
+
+                            // 4. Update UI StateFlow
+                            _serviceState.update { current ->
+                                val updatedLog = if (newTamperEvent != null) {
+                                    (listOf(newTamperEvent) + current.tamperAlertLog).take(20)
+                                } else {
+                                    current.tamperAlertLog
+                                }
+
+                                current.copy(
+                                    currentSequenceId = frame.sequenceId,
+                                    timestampMs = frame.timestampMs,
+                                    peakVoltageV = frame.peakV,
+                                    opticalSensorV = frame.opticalSensorV,
+                                    riseTimeNs = frame.riseTimeNs,
+                                    decayTimeMs = frame.decayTimeMs,
+                                    predictedClass = inferenceResult.label,
+                                    classIndex = inferenceResult.classIndex,
+                                    confidence = inferenceResult.confidence,
+                                    probabilities = inferenceResult.probabilities,
+                                    inferenceLatencyUs = inferenceResult.inferenceTimeUs,
+                                    receivedFrames = receivedFramesCount,
+                                    validFrames = validFramesCount,
+                                    invalidFrames = invalidFramesCount,
+                                    droppedFrames = droppedFramesCount,
+                                    inferredFrames = inferredFramesCount,
+                                    tamperAlerts = tamperAlertsCount,
+                                    latestProtocolError = null,
+                                    tamperAlertLog = updatedLog
+                                )
+                            }
+                        }
+                        is ProtocolResult.Failure -> {
+                            invalidFramesCount++
+                            _serviceState.update { current ->
+                                current.copy(
+                                    receivedFrames = receivedFramesCount,
+                                    invalidFrames = invalidFramesCount,
+                                    latestProtocolError = parseResult.error.message
+                                )
+                            }
+                        }
+                    }
+                }
         }
     }
 
     private fun stopMonitoring() {
         processingJob?.cancel()
         processingJob = null
-        telemetryProvider.stop()
+
+        serviceScope.launch {
+            telemetryProvider.stop()
+        }
+
         featureExtractor.reset()
         sequenceTracker.reset()
         alertGate.reset()
@@ -218,13 +277,6 @@ class SparkShieldMonitoringService : Service() {
         stopMonitoring()
         inferenceEngine.close()
         serviceScope.cancel()
-
-        try {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-            }
-        } catch (_: Exception) {
-        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -267,7 +319,7 @@ class SparkShieldMonitoringService : Service() {
             context.startService(intent)
         }
 
-        fun triggerTamperInjection(context: Context, tamperClass: ClassLabels, burstCount: Int = 5) {
+        fun triggerTamperInjection(context: Context, tamperClass: ClassLabels, burstCount: Int = 8) {
             val intent = Intent(context, SparkShieldMonitoringService::class.java).apply {
                 action = ACTION_TRIGGER_TAMPER
                 putExtra(EXTRA_TAMPER_CLASS_ID, tamperClass.id)

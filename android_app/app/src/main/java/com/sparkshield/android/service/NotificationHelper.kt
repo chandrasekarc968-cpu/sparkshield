@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.os.CombinedVibration
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -18,7 +17,7 @@ import com.sparkshield.android.inference.ClassLabels
 
 /**
  * Manages notification channels, foreground service persistent notifications,
- * and high-priority heads-up tamper alerts with haptic vibration patterns.
+ * and high-priority simulation tamper alerts with haptic vibration patterns.
  */
 class NotificationHelper(private val context: Context) {
 
@@ -42,22 +41,22 @@ class NotificationHelper(private val context: Context) {
             // Low priority channel for continuous background monitoring
             val monitoringChannel = NotificationChannel(
                 CHANNEL_MONITORING_ID,
-                context.getString(R.string.channel_monitoring_name),
+                "SparkShield Edge Monitoring",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = context.getString(R.string.channel_monitoring_desc)
+                description = "Ongoing smart-meter telemetry edge monitoring (SIMULATION ONLY)"
                 setShowBadge(false)
             }
 
-            // High priority channel for confidence-gated tamper alerts
+            // High priority channel: SparkShield Simulation Alerts
             val alertsChannel = NotificationChannel(
-                CHANNEL_ALERTS_ID,
-                context.getString(R.string.channel_alerts_name),
+                CHANNEL_SIMULATION_ALERTS_ID,
+                "SparkShield Simulation Alerts",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = context.getString(R.string.channel_alerts_desc)
+                description = "Confidence-gated smart-meter tamper alerts (SIMULATION ONLY)"
                 enableVibration(true)
-                vibrationPattern = longArrayOf(0, 300, 150, 300)
+                vibrationPattern = longArrayOf(0, 200, 100, 200)
                 setShowBadge(true)
             }
 
@@ -69,7 +68,7 @@ class NotificationHelper(private val context: Context) {
     /**
      * Builds the persistent notification required for the foreground service.
      */
-    fun buildForegroundNotification(statusText: String = "Monitoring smart-meter telemetry"): Notification {
+    fun buildForegroundNotification(statusText: String = "Monitoring smart-meter telemetry (SIMULATION ONLY)"): Notification {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -81,7 +80,7 @@ class NotificationHelper(private val context: Context) {
         )
 
         return NotificationCompat.Builder(context, CHANNEL_MONITORING_ID)
-            .setContentTitle(context.getString(R.string.app_name))
+            .setContentTitle("SparkShield [SIMULATION ONLY]")
             .setContentText(statusText)
             .setSmallIcon(R.drawable.ic_shield)
             .setOngoing(true)
@@ -92,25 +91,26 @@ class NotificationHelper(private val context: Context) {
     }
 
     /**
-     * Dispatches a high-priority heads-up tamper alert notification and triggers haptic feedback.
+     * Dispatches a high-priority heads-up tamper alert notification and triggers haptic vibration.
      */
-    fun postTamperAlert(tamperClass: ClassLabels, confidence: Float) {
-        val title = "TAMPER DETECTED: ${tamperClass.name}"
-        val text = "Confidence: ${(confidence * 100).toInt()}% - Edge ML confirmed anomalous transient signature."
-
+    fun postTamperAlert(decision: AlertGate.AlertDecision.TriggerAlert) {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         val pendingIntent = PendingIntent.getActivity(
             context,
-            tamperClass.id,
+            decision.tamperClass.id,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_ALERTS_ID)
-            .setContentTitle(title)
-            .setContentText(text)
+        val confPercent = (decision.confidence * 100).toInt()
+        val content = "${decision.alertMessage} (Confidence: $confPercent%) - SIMULATION ONLY"
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_SIMULATION_ALERTS_ID)
+            .setContentTitle("[SIMULATION ONLY] ${decision.tamperClass.name} Detected")
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
             .setSmallIcon(R.drawable.ic_shield)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
@@ -118,44 +118,30 @@ class NotificationHelper(private val context: Context) {
             .setContentIntent(pendingIntent)
             .build()
 
-        notificationManager.notify(NOTIFICATION_ALERT_BASE_ID + tamperClass.id, notification)
-        triggerHapticPattern(tamperClass)
+        notificationManager.notify(NOTIFICATION_ALERT_BASE_ID + decision.tamperClass.id, notification)
+        triggerShortVibration()
     }
 
     /**
-     * Executes specialized haptic vibration signatures based on the tamper class.
+     * Triggers a short vibration pattern only for a gated alert. Does not use full-screen intents.
      */
-    fun triggerHapticPattern(tamperClass: ClassLabels) {
-        val pattern = when (tamperClass) {
-            ClassLabels.EMP -> longArrayOf(0, 100, 50, 100, 50, 300)      // Rapid bursts
-            ClassLabels.OPTICAL -> longArrayOf(0, 400, 200, 400)           // Sustained pulses
-            ClassLabels.SURGE -> longArrayOf(0, 250, 100, 250)             // Double shock
-            ClassLabels.NORMAL -> return
-        }
-
-        val amplitudes = when (tamperClass) {
-            ClassLabels.EMP -> intArrayOf(0, 255, 0, 255, 0, 255)
-            ClassLabels.OPTICAL -> intArrayOf(0, 180, 0, 255)
-            ClassLabels.SURGE -> intArrayOf(0, 220, 0, 220)
-            ClassLabels.NORMAL -> return
-        }
-
+    fun triggerShortVibration() {
+        val pattern = longArrayOf(0, 250, 100, 250) // Short double pulse
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val effect = VibrationEffect.createWaveform(pattern, amplitudes, -1)
+                val effect = VibrationEffect.createWaveform(pattern, -1)
                 vibrator?.vibrate(effect)
             } else {
                 @Suppress("DEPRECATION")
                 vibrator?.vibrate(pattern, -1)
             }
         } catch (_: Exception) {
-            // Safe fallback if permission or hardware unavailable in emulator
         }
     }
 
     companion object {
         const val CHANNEL_MONITORING_ID = "sparkshield_monitoring_channel"
-        const val CHANNEL_ALERTS_ID = "sparkshield_tamper_alerts_channel"
+        const val CHANNEL_SIMULATION_ALERTS_ID = "sparkshield_simulation_alerts"
 
         const val NOTIFICATION_SERVICE_ID = 1001
         const val NOTIFICATION_ALERT_BASE_ID = 2000

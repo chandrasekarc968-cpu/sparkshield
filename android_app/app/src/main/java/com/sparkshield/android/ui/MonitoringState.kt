@@ -9,7 +9,8 @@ import java.util.Arrays
 data class TamperEvent(
     val timestampMs: Long,
     val tamperClass: ClassLabels,
-    val confidence: Float
+    val confidence: Float,
+    val message: String
 )
 
 /**
@@ -18,23 +19,31 @@ data class TamperEvent(
 data class MonitoringState(
     val isServiceRunning: Boolean = false,
     val isConnected: Boolean = false,
+    val isModelLoaded: Boolean = false,
+    val modelLoadError: String? = null,
     val currentSequenceId: Long = 0L,
     val timestampMs: Long = 0L,
     val peakVoltageV: Float = 0.0f,
     val opticalSensorV: Float = 0.0f,
     val riseTimeNs: Long = 0L,
     val decayTimeMs: Float = 0.0f,
-    val predictedClass: ClassLabels = ClassLabels.NORMAL,
+    val predictedClass: String = "NORMAL",
+    val classIndex: Int = 0,
     val confidence: Float = 1.0f,
     val probabilities: FloatArray = floatArrayOf(1.0f, 0.0f, 0.0f, 0.0f),
-    val latencyMs: Float = 0.0f,
-    val framesReceived: Long = 0L,
-    val framesDropped: Long = 0L,
-    val lastTamperClass: ClassLabels? = null,
-    val lastTamperTimestamp: Long = 0L,
-    val lastTamperConfidence: Float = 0.0f,
+    val inferenceLatencyUs: Long = 0L,
+    val receivedFrames: Long = 0L,
+    val validFrames: Long = 0L,
+    val invalidFrames: Long = 0L,
+    val droppedFrames: Long = 0L,
+    val inferredFrames: Long = 0L,
+    val tamperAlerts: Long = 0L,
+    val latestProtocolError: String? = null,
     val tamperAlertLog: List<TamperEvent> = emptyList()
 ) {
+    val latencyMs: Float
+        get() = inferenceLatencyUs / 1000.0f
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
@@ -42,6 +51,8 @@ data class MonitoringState(
         other as MonitoringState
         if (isServiceRunning != other.isServiceRunning) return false
         if (isConnected != other.isConnected) return false
+        if (isModelLoaded != other.isModelLoaded) return false
+        if (modelLoadError != other.modelLoadError) return false
         if (currentSequenceId != other.currentSequenceId) return false
         if (timestampMs != other.timestampMs) return false
         if (peakVoltageV != other.peakVoltageV) return false
@@ -49,14 +60,17 @@ data class MonitoringState(
         if (riseTimeNs != other.riseTimeNs) return false
         if (decayTimeMs != other.decayTimeMs) return false
         if (predictedClass != other.predictedClass) return false
+        if (classIndex != other.classIndex) return false
         if (confidence != other.confidence) return false
         if (!Arrays.equals(probabilities, other.probabilities)) return false
-        if (latencyMs != other.latencyMs) return false
-        if (framesReceived != other.framesReceived) return false
-        if (framesDropped != other.framesDropped) return false
-        if (lastTamperClass != other.lastTamperClass) return false
-        if (lastTamperTimestamp != other.lastTamperTimestamp) return false
-        if (lastTamperConfidence != other.lastTamperConfidence) return false
+        if (inferenceLatencyUs != other.inferenceLatencyUs) return false
+        if (receivedFrames != other.receivedFrames) return false
+        if (validFrames != other.validFrames) return false
+        if (invalidFrames != other.invalidFrames) return false
+        if (droppedFrames != other.droppedFrames) return false
+        if (inferredFrames != other.inferredFrames) return false
+        if (tamperAlerts != other.tamperAlerts) return false
+        if (latestProtocolError != other.latestProtocolError) return false
         if (tamperAlertLog != other.tamperAlertLog) return false
         return true
     }
@@ -64,6 +78,8 @@ data class MonitoringState(
     override fun hashCode(): Int {
         var result = isServiceRunning.hashCode()
         result = 31 * result + isConnected.hashCode()
+        result = 31 * result + isModelLoaded.hashCode()
+        result = 31 * result + (modelLoadError?.hashCode() ?: 0)
         result = 31 * result + currentSequenceId.hashCode()
         result = 31 * result + timestampMs.hashCode()
         result = 31 * result + peakVoltageV.hashCode()
@@ -71,14 +87,17 @@ data class MonitoringState(
         result = 31 * result + riseTimeNs.hashCode()
         result = 31 * result + decayTimeMs.hashCode()
         result = 31 * result + predictedClass.hashCode()
+        result = 31 * result + classIndex
         result = 31 * result + confidence.hashCode()
         result = 31 * result + Arrays.hashCode(probabilities)
-        result = 31 * result + latencyMs.hashCode()
-        result = 31 * result + framesReceived.hashCode()
-        result = 31 * result + framesDropped.hashCode()
-        result = 31 * result + (lastTamperClass?.hashCode() ?: 0)
-        result = 31 * result + lastTamperTimestamp.hashCode()
-        result = 31 * result + lastTamperConfidence.hashCode()
+        result = 31 * result + inferenceLatencyUs.hashCode()
+        result = 31 * result + receivedFrames.hashCode()
+        result = 31 * result + validFrames.hashCode()
+        result = 31 * result + invalidFrames.hashCode()
+        result = 31 * result + droppedFrames.hashCode()
+        result = 31 * result + inferredFrames.hashCode()
+        result = 31 * result + tamperAlerts.hashCode()
+        result = 31 * result + (latestProtocolError?.hashCode() ?: 0)
         result = 31 * result + tamperAlertLog.hashCode()
         return result
     }

@@ -5,11 +5,17 @@ import com.sparkshield.android.inference.InferenceResult
 
 /**
  * Confidence-gated alert decision maker.
+ * Pure Kotlin with zero Android dependencies for frictionless JVM unit testing.
  *
  * Requirements:
- *   - Strictly alerts only when confidence >= 0.85 (85%).
- *   - Class NORMAL never triggers alerts.
- *   - Enforces a 3-second (3000 ms) cooldown per tamper class to prevent alert flooding.
+ *   - Alert only when:
+ *       EMP confidence >= 0.85
+ *       OPTICAL confidence >= 0.85
+ *       SURGE confidence >= 0.85
+ *   - NORMAL must never trigger a tamper alert.
+ *   - Do not repeat the same alert more often than once every 5 seconds (5000 ms).
+ *   - Reset the gate after a valid NORMAL result.
+ *   - Configurable threshold (default 0.85).
  */
 class AlertGate(
     val confidenceThreshold: Float = DEFAULT_CONFIDENCE_THRESHOLD,
@@ -22,6 +28,8 @@ class AlertGate(
         data class TriggerAlert(
             val tamperClass: ClassLabels,
             val confidence: Float,
+            val alertTitle: String,
+            val alertMessage: String,
             val timestampMs: Long
         ) : AlertDecision
 
@@ -35,7 +43,7 @@ class AlertGate(
     }
 
     /**
-     * Evaluates an inference result to decide whether an audible/haptic alert should be dispatched.
+     * Evaluates an inference result to decide whether an alert should be dispatched.
      *
      * @param result Edge neural network inference result.
      * @param currentTimeMs Current epoch milliseconds (allows deterministic unit testing).
@@ -43,8 +51,9 @@ class AlertGate(
      */
     @Synchronized
     fun evaluate(result: InferenceResult, currentTimeMs: Long = System.currentTimeMillis()): AlertDecision {
-        // 1. Never alert on normal benign grid operations
+        // 1. NORMAL never triggers an alert, and resets the gate per requirement
         if (!result.isTamper) {
+            reset()
             return AlertDecision.Suppressed(SuppressionReason.NORMAL_CLASS)
         }
 
@@ -53,7 +62,7 @@ class AlertGate(
             return AlertDecision.Suppressed(SuppressionReason.CONFIDENCE_BELOW_THRESHOLD)
         }
 
-        // 3. Check rate-limiting cooldown per tamper class
+        // 3. Do not repeat the same alert more often than once every 5 seconds (5000 ms)
         val lastTimestamp = lastAlertTimestamps[result.predictedClass]
         if (lastTimestamp != null) {
             val elapsed = currentTimeMs - lastTimestamp
@@ -62,17 +71,21 @@ class AlertGate(
             }
         }
 
-        // Passed all gates: record timestamp and dispatch alert
+        // Passed all gates: record timestamp and trigger alert
         lastAlertTimestamps[result.predictedClass] = currentTimeMs
+
+        val message = getAlertText(result.predictedClass)
         return AlertDecision.TriggerAlert(
             tamperClass = result.predictedClass,
             confidence = result.confidence,
+            alertTitle = SIMULATION_ALERT_TITLE,
+            alertMessage = message,
             timestampMs = currentTimeMs
         )
     }
 
     /**
-     * Resets cooldown records.
+     * Resets the gate cooldown tracking.
      */
     @Synchronized
     fun reset() {
@@ -81,6 +94,21 @@ class AlertGate(
 
     companion object {
         const val DEFAULT_CONFIDENCE_THRESHOLD: Float = 0.85f
-        const val DEFAULT_COOLDOWN_MS: Long = 3000L // 3 seconds cooldown
+        const val DEFAULT_COOLDOWN_MS: Long = 5000L // 5 seconds rate-limiting
+
+        const val SIMULATION_ALERT_TITLE = "SIMULATION ONLY: Tamper Alert"
+
+        const val TEXT_EMP = "High-voltage EMP-like transient detected in simulation"
+        const val TEXT_OPTICAL = "Optical saturation event detected in simulation"
+        const val TEXT_SURGE = "Inductive surge event detected in simulation"
+
+        fun getAlertText(tamperClass: ClassLabels): String {
+            return when (tamperClass) {
+                ClassLabels.EMP -> TEXT_EMP
+                ClassLabels.OPTICAL -> TEXT_OPTICAL
+                ClassLabels.SURGE -> TEXT_SURGE
+                ClassLabels.NORMAL -> ""
+            }
+        }
     }
 }

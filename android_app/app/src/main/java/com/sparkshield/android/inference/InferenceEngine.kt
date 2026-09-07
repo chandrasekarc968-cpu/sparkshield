@@ -1,37 +1,29 @@
 package com.sparkshield.android.inference
 
-import android.content.Context
-
 /**
- * Clean decoupled abstraction for on-device ML model execution.
- * Allows switching between CPU ONNX Runtime, mock test engines,
- * and future Qualcomm QNN / Hexagon HTP accelerators without altering service logic.
+ * Clean decoupled abstraction for on-device edge ML model execution.
+ *
+ * Requirements:
+ *   - load(): Result<Unit>
+ *   - infer(input: FloatArray): Result<InferenceResult>
+ *   - close()
  */
 interface InferenceEngine {
 
     /**
-     * Initialize engine and load model resources.
-     *
-     * @param context Application context used to access asset files.
-     * @return True if initialized successfully.
+     * Loads the model and validates input/output tensor shapes.
+     * Fails with a structured error if the model artifact is missing or invalid.
      */
-    suspend fun initialize(context: Context): Boolean
+    suspend fun load(): Result<Unit>
 
     /**
-     * Execute inference over a 128-element normalized feature array (1, 1, 128).
-     *
-     * @param featureTensor Normalized input tensor.
-     * @return [InferenceResult] with predicted class, confidence, softmax probabilities, and latency.
+     * Executes inference on the 128-element normalized feature array (shape [1, 1, 128]).
+     * Returns structured Result with InferenceResult or failure.
      */
-    suspend fun predict(featureTensor: FloatArray): InferenceResult
+    suspend fun infer(input: FloatArray): Result<InferenceResult>
 
     /**
-     * Flag indicating whether the engine is ready to accept prediction requests.
-     */
-    val isReady: Boolean
-
-    /**
-     * Release model sessions, memory buffers, and native runtime handles.
+     * Releases ONNX sessions and native runtime resources.
      */
     fun close()
 }

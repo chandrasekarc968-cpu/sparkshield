@@ -7,91 +7,119 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.Random
 
 /**
- * Deterministic, seedable synthetic telemetry frame provider for smart-meter simulation.
+ * Deterministic synthetic telemetry frame provider for smart-meter simulation.
  *
- * Implements 10 Hz frame streaming with simulated benign grid, EMP-like transient,
- * optical saturation, and inductive surge classes matching python_core/signal_models.py.
+ * SIMULATION ONLY:
+ * All telemetry, sensor signals, transients, and optical readings are purely mathematical
+ * software simulations. No actual electrical meter, high voltage, RF radiation, or attack
+ * hardware is involved.
+ *
+ * Default Demo Pattern:
+ *   - 20 frames NORMAL
+ *   - 8 frames EMP
+ *   - 20 frames NORMAL
+ *   - 8 frames OPTICAL
+ *   - 20 frames NORMAL
+ *   - 8 frames SURGE
+ *   - repeat
  */
 class MockTelemetryProvider(
-    private val rateHz: Float = 10.0f,
-    private val seed: Long = 42L,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default)
+    val intervalMs: Long = DEFAULT_INTERVAL_MS,
+    val seed: Long = 42L,
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default),
+    val useDefaultDemoSequence: Boolean = true
 ) : TelemetryProvider {
 
     private val random = Random(seed)
     private var sequenceCounter: Long = 0L
-    private val intervalMs: Long = (1000.0f / rateHz.coerceAtLeast(0.1f)).toLong()
 
-    private val _rawFrameFlow = MutableSharedFlow<ByteArray>(replay = 0, extraBufferCapacity = 64)
-    override val rawFrameFlow: SharedFlow<ByteArray> = _rawFrameFlow.asSharedFlow()
-
-    private val _isConnected = MutableStateFlow(false)
-    override val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+    private val _frames = MutableSharedFlow<ByteArray>(replay = 0, extraBufferCapacity = 64)
+    override val frames: Flow<ByteArray> = _frames.asSharedFlow()
 
     private var streamingJob: Job? = null
+    @Volatile
+    var isRunning: Boolean = false
+        private set
 
-    // Tamper burst injection state
+    // Tamper burst injection overrides
     @Volatile
-    private var activeClass: ClassLabels = ClassLabels.NORMAL
+    private var manualTamperClass: ClassLabels? = null
     @Volatile
-    private var tamperBurstRemaining: Int = 0
+    private var manualTamperRemaining: Int = 0
+
+    // Malformed frame injection for unit and system robustness tests
+    @Volatile
+    var nextFrameMalformed: Boolean = false
+
+    // Demo sequence tracking: 20 Normal -> 8 Emp -> 20 Normal -> 8 Optical -> 20 Normal -> 8 Surge
+    private var demoStepIndex: Int = 0
+    private var demoStepFrameCount: Int = 0
+
+    private val demoSchedule = listOf(
+        DemoStep(ClassLabels.NORMAL, 20),
+        DemoStep(ClassLabels.EMP, 8),
+        DemoStep(ClassLabels.NORMAL, 20),
+        DemoStep(ClassLabels.OPTICAL, 8),
+        DemoStep(ClassLabels.NORMAL, 20),
+        DemoStep(ClassLabels.SURGE, 8)
+    )
+
+    private data class DemoStep(val targetClass: ClassLabels, val frameCount: Int)
 
     /**
-     * Trigger a burst of consecutive tamper frames for manual testing or scenario simulation.
+     * Manually schedule a burst of a specific tamper class for testing.
      */
-    fun triggerTamper(targetClass: ClassLabels, burstCount: Int = 5) {
-        activeClass = targetClass
-        tamperBurstRemaining = burstCount.coerceAtLeast(1)
+    fun triggerTamper(targetClass: ClassLabels, burstCount: Int = 8) {
+        manualTamperClass = targetClass
+        manualTamperRemaining = burstCount.coerceAtLeast(1)
     }
 
-    override fun start() {
-        if (_isConnected.value) return
-        _isConnected.value = true
+    override suspend fun start() {
+        if (isRunning) return
+        isRunning = true
 
         streamingJob = scope.launch {
-            while (isActive && _isConnected.value) {
-                val frame = generateNextFrame()
-                val packed = TelemetryFrameParser.pack(frame)
-                _rawFrameFlow.emit(packed)
+            while (isActive && isRunning) {
+                val frameBytes = generateNextFrameBytes()
+                _frames.emit(frameBytes)
                 delay(intervalMs)
             }
         }
     }
 
-    override fun stop() {
-        _isConnected.value = false
+    override suspend fun stop() {
+        isRunning = false
         streamingJob?.cancel()
         streamingJob = null
     }
 
     /**
-     * Generates a single deterministic TelemetryFrame according to current active class.
+     * Generates the next 29-byte frame buffer (or malformed frame if requested).
      */
-    fun generateNextFrame(): TelemetryFrame {
-        val currentClass: ClassLabels
-        synchronized(this) {
-            if (tamperBurstRemaining > 0) {
-                currentClass = activeClass
-                tamperBurstRemaining--
-                if (tamperBurstRemaining == 0) {
-                    activeClass = ClassLabels.NORMAL
-                }
-            } else {
-                currentClass = ClassLabels.NORMAL
-            }
+    fun generateNextFrameBytes(): ByteArray {
+        if (nextFrameMalformed) {
+            nextFrameMalformed = false
+            // Inject malformed 29-byte frame with corrupted magic and CRC
+            return ByteArray(TelemetryFrame.FRAME_LENGTH) { 0xFF.toByte() }
         }
 
+        val frame = generateNextFrame()
+        return TelemetryFrameParser.pack(frame)
+    }
+
+    /**
+     * Generates a single deterministic TelemetryFrame.
+     */
+    fun generateNextFrame(): TelemetryFrame {
+        val currentClass = determineCurrentClass()
         val seq = sequenceCounter
         sequenceCounter = (sequenceCounter + 1L) and 0xFFFFFFFFL
         val ts = seq * intervalMs
@@ -104,12 +132,65 @@ class MockTelemetryProvider(
         }
     }
 
+    private fun determineCurrentClass(): ClassLabels {
+        synchronized(this) {
+            // Check manual burst override first
+            if (manualTamperRemaining > 0 && manualTamperClass != null) {
+                val target = manualTamperClass!!
+                manualTamperRemaining--
+                if (manualTamperRemaining == 0) {
+                    manualTamperClass = null
+                }
+                return target
+            }
+
+            if (!useDefaultDemoSequence) {
+                return ClassLabels.NORMAL
+            }
+
+            // Execute automated demo sequence: 20 Normal, 8 EMP, 20 Normal, 8 Optical, 20 Normal, 8 Surge
+            val currentStep = demoSchedule[demoStepIndex]
+            demoStepFrameCount++
+
+            if (demoStepFrameCount >= currentStep.frameCount) {
+                demoStepIndex = (demoStepIndex + 1) % demoSchedule.size
+                demoStepFrameCount = 0
+            }
+
+            return currentStep.targetClass
+        }
+    }
+
+    /**
+     * Resets sequence and demo state.
+     */
+    fun reset(newSeed: Long? = null) {
+        sequenceCounter = 0L
+        demoStepIndex = 0
+        demoStepFrameCount = 0
+        manualTamperClass = null
+        manualTamperRemaining = 0
+        nextFrameMalformed = false
+        if (newSeed != null) {
+            random.setSeed(newSeed)
+        }
+    }
+
+    // -------------------------------------------------------------------------------------
+    // Class Generators Matching Python Ranges (SIMULATION ONLY)
+    // -------------------------------------------------------------------------------------
+
     private fun generateNormal(seq: Long, ts: Long): TelemetryFrame {
+        // Normal AC grid: 3250 mV nominal ADC voltage (+/- 100 mV variation)
         val peakMv = (3250 + random.nextInt(201) - 100).coerceIn(2800, 3600)
+        // Normal quarter-cycle front equivalent (~500 us = 50,000 code units at 10 ns/LSB)
         val riseCode = (50000 + random.nextInt(1001) - 500).coerceIn(1000, 65535)
+        // Millisecond-scale decay: ~5 ms (5,000 us)
         val decayUs = (5000 + random.nextInt(201) - 100).coerceIn(1000, 65535)
+        // Optical sensor baseline ambient noise (100 - 250 mV)
         val optMv = (150 + random.nextInt(61) - 30).coerceIn(50, 400)
 
+        // Fundamental 50/60Hz dominant in Bin 0, minor 3rd harmonic in Bin 1
         val bins = byteArrayOf(
             (220 + random.nextInt(21) - 10).coerceIn(180, 255).toByte(),
             (35 + random.nextInt(11) - 5).coerceIn(10, 60).toByte(),
@@ -134,11 +215,15 @@ class MockTelemetryProvider(
     }
 
     private fun generateEmp(seq: Long, ts: Long): TelemetryFrame {
+        // Synthetic EMP transient: high peak voltage (38,000 - 65,000 mV)
         val peakMv = (38000 + random.nextInt(27000)).coerceIn(20000, 65535)
-        val riseCode = (1 + random.nextInt(3)) // 10..30 ns
-        val decayUs = (1 + random.nextInt(15)) // 1..15 µs
+        // Ultrafast nanosecond rise time: 10 - 30 ns -> code 1 to 3
+        val riseCode = (1 + random.nextInt(3))
+        // Microsecond-scale decay: 1 - 15 us
+        val decayUs = (1 + random.nextInt(15))
         val optMv = (160 + random.nextInt(61) - 30).coerceIn(50, 400)
 
+        // Broad high-frequency spectral distribution across bins 3..7
         val bins = byteArrayOf(
             (110 + random.nextInt(41)).toByte(),
             (140 + random.nextInt(51)).toByte(),
@@ -164,10 +249,13 @@ class MockTelemetryProvider(
 
     private fun generateOptical(seq: Long, ts: Long): TelemetryFrame {
         val peakMv = (3250 + random.nextInt(201) - 100).coerceIn(2800, 3600)
+        // Saturated optical sensor approaching rail (3,800 - 4,950 mV)
         val optMv = (3800 + random.nextInt(1151)).coerceIn(3200, 5000)
+        // Slow saturation front (clamped to prevent overflow)
         val riseCode = (20000 + random.nextInt(25001)).coerceIn(0, 65535)
         val decayUs = (30000 + random.nextInt(30001)).coerceIn(0, 65535)
 
+        // Low-frequency dominant spectrum
         val bins = byteArrayOf(
             (240 + random.nextInt(21) - 10).coerceIn(200, 255).toByte(),
             (30 + random.nextInt(11) - 5).coerceIn(10, 50).toByte(),
@@ -192,11 +280,15 @@ class MockTelemetryProvider(
     }
 
     private fun generateSurge(seq: Long, ts: Long): TelemetryFrame {
+        // Inductive switching surge: medium-high peak (7,500 - 18,500 mV)
         val peakMv = (7500 + random.nextInt(11001)).coerceIn(6000, 25000)
+        // Rise time 10 - 50 us -> 1,000 - 5,000
         val riseCode = (1000 + random.nextInt(4001))
+        // Millisecond-scale decay: 500 - 5,000 us
         val decayUs = (500 + random.nextInt(4501))
         val optMv = (160 + random.nextInt(61) - 30).coerceIn(50, 400)
 
+        // Resonant ring concentrated in bins 1 and 2
         val bins = byteArrayOf(
             (140 + random.nextInt(51)).toByte(),
             (210 + random.nextInt(46)).toByte(),
@@ -218,5 +310,9 @@ class MockTelemetryProvider(
             opticalSensorMv = optMv,
             fftEnergyBins = bins
         )
+    }
+
+    companion object {
+        const val DEFAULT_INTERVAL_MS = 100L // 10 Hz
     }
 }

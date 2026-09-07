@@ -31,7 +31,7 @@
                 android:layout_weight="1"
                 android:text="@string/app_name"
                 android:textColor="@color/text_primary"
-                android:textSize="22sp"
+                android:textSize="20sp"
                 android:textStyle="bold" />
 
             <TextView
@@ -46,11 +46,57 @@
                 android:textSize="12sp" />
         </LinearLayout>
 
+        <!-- System Diagnostics Card -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            app:cardBackgroundColor="@color/surface_dark"
+            app:cardCornerRadius="10dp"
+            app:cardElevation="0dp"
+            app:strokeColor="@color/card_border"
+            app:strokeWidth="1dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="12dp">
+
+                <TextView
+                    android:id="@+id/tvModelStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Model: Initializing..."
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/tvFrameCounters"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Valid Frames: 0 | Invalid: 0 | Dropped: 0"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/tvLatestProtocolError"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Latest Protocol Error: None"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11sp" />
+
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- Primary Classification Card -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
+            android:layout_marginTop="12dp"
             app:cardBackgroundColor="@color/surface_dark"
             app:cardCornerRadius="12dp"
             app:cardElevation="0dp"
@@ -66,7 +112,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="INFERENCE STATE"
+                    android:text="SIMULATED EDGE CLASSIFICATION"
                     android:textColor="@color/text_secondary"
                     android:textSize="11sp"
                     android:letterSpacing="0.1" />
@@ -78,7 +124,7 @@
                     android:layout_marginTop="4dp"
                     android:text="NORMAL"
                     android:textColor="@color/color_normal"
-                    android:textSize="28sp"
+                    android:textSize="26sp"
                     android:textStyle="bold" />
 
                 <TextView
@@ -86,7 +132,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:text="Confidence: 99.8%"
+                    android:text="Confidence: 100%"
                     android:textColor="@color/text_secondary"
                     android:textSize="14sp" />
 
@@ -97,14 +143,14 @@
                     android:layout_height="6dp"
                     android:layout_marginTop="8dp"
                     android:max="100"
-                    android:progress="99" />
+                    android:progress="100" />
 
                 <TextView
                     android:id="@+id/tvInferenceLatency"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:text="Inference Latency: 0.42 ms"
+                    android:text="Inference Latency: 0 µs"
                     android:textColor="@color/text_secondary"
                     android:textSize="12sp" />
 
@@ -131,7 +177,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="TELEMETRY TELEMETRICS"
+                    android:text="TELEMETRY SENSOR METRICS (SIMULATION)"
                     android:textColor="@color/text_secondary"
                     android:textSize="11sp"
                     android:letterSpacing="0.1" />
@@ -161,7 +207,7 @@
                             android:layout_height="wrap_content"
                             android:text="3,250 mV"
                             android:textColor="@color/text_primary"
-                            android:textSize="18sp"
+                            android:textSize="16sp"
                             android:textStyle="bold" />
                     </LinearLayout>
 
@@ -184,7 +230,7 @@
                             android:layout_height="wrap_content"
                             android:text="150 mV"
                             android:textColor="@color/text_primary"
-                            android:textSize="18sp"
+                            android:textSize="16sp"
                             android:textStyle="bold" />
                     </LinearLayout>
 
@@ -205,9 +251,9 @@
                             android:id="@+id/tvSequence"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="#0042"
+                            android:text="#0000"
                             android:textColor="@color/text_primary"
-                            android:textSize="18sp"
+                            android:textSize="16sp"
                             android:textStyle="bold" />
                     </LinearLayout>
                 </LinearLayout>
@@ -245,8 +291,8 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:text="SIMULATED TAMPER INJECTION (TEST ONLY)"
+            android:layout_marginTop="16dp"
+            android:text="SIMULATED TAMPER INJECTION (DEMO ONLY)"
             android:textColor="@color/text_secondary"
             android:textSize="11sp"
             android:letterSpacing="0.1" />

@@ -20,14 +20,25 @@ import com.sparkshield.android.ui.MonitoringViewModel
 import kotlinx.coroutines.launch
 
 /**
- * Main dashboard activity for SparkShield smart-meter tamper detection.
- * Provides real-time telemetry metrics, classification outputs, and test injection controls.
+ * Diagnostic Activity for SparkShield smart-meter edge monitoring.
+ *
+ * Provides real-time visibility into:
+ *   - Service status
+ *   - Model load status & errors
+ *   - Classification & confidence
+ *   - Inference duration (microseconds & milliseconds)
+ *   - Frame counts: valid, invalid, dropped, inferred, alerts
+ *   - Latest protocol parsing error
+ *   - Simulated tamper injection controls
  */
 class MainActivity : AppCompatActivity() {
 
     private val viewModel: MonitoringViewModel by viewModels()
 
     private lateinit var tvConnectionStatus: TextView
+    private lateinit var tvModelStatus: TextView
+    private lateinit var tvFrameCounters: TextView
+    private lateinit var tvLatestProtocolError: TextView
     private lateinit var tvClassification: TextView
     private lateinit var tvConfidence: TextView
     private lateinit var pbConfidence: ProgressBar
@@ -53,6 +64,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun bindViews() {
         tvConnectionStatus = findViewById(R.id.tvConnectionStatus)
+        tvModelStatus = findViewById(R.id.tvModelStatus)
+        tvFrameCounters = findViewById(R.id.tvFrameCounters)
+        tvLatestProtocolError = findViewById(R.id.tvLatestProtocolError)
         tvClassification = findViewById(R.id.tvClassification)
         tvConfidence = findViewById(R.id.tvConfidence)
         pbConfidence = findViewById(R.id.pbConfidence)
@@ -77,15 +91,15 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnInjectEmp.setOnClickListener {
-            viewModel.injectTamperBurst(this, ClassLabels.EMP, burstCount = 5)
+            viewModel.injectTamperBurst(this, ClassLabels.EMP, burstCount = 8)
         }
 
         btnInjectOptical.setOnClickListener {
-            viewModel.injectTamperBurst(this, ClassLabels.OPTICAL, burstCount = 5)
+            viewModel.injectTamperBurst(this, ClassLabels.OPTICAL, burstCount = 8)
         }
 
         btnInjectSurge.setOnClickListener {
-            viewModel.injectTamperBurst(this, ClassLabels.SURGE, burstCount = 5)
+            viewModel.injectTamperBurst(this, ClassLabels.SURGE, burstCount = 8)
         }
     }
 
@@ -100,32 +114,57 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderState(state: MonitoringState) {
+        // Connection & Service Status
         if (state.isConnected) {
             tvConnectionStatus.text = getString(R.string.status_connected)
             tvConnectionStatus.setTextColor(ContextCompat.getColor(this, R.color.color_normal))
         } else {
-            tvConnectionStatus.text = getString(R.string.status_disconnected)
+            tvConnectionStatus.text = if (state.isServiceRunning) "Running (Idle)" else getString(R.string.status_disconnected)
             tvConnectionStatus.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
         }
 
-        tvClassification.text = state.predictedClass.name
-        val classColor = when (state.predictedClass) {
-            ClassLabels.NORMAL -> ContextCompat.getColor(this, R.color.color_normal)
-            ClassLabels.EMP -> ContextCompat.getColor(this, R.color.color_emp)
-            ClassLabels.OPTICAL -> ContextCompat.getColor(this, R.color.color_optical)
-            ClassLabels.SURGE -> ContextCompat.getColor(this, R.color.color_surge)
+        // Model Load Status
+        if (state.isModelLoaded) {
+            tvModelStatus.text = "Model: Loaded (ONNX Runtime CPU)"
+            tvModelStatus.setTextColor(ContextCompat.getColor(this, R.color.color_normal))
+        } else if (state.modelLoadError != null) {
+            tvModelStatus.text = "Model Error: ${state.modelLoadError}"
+            tvModelStatus.setTextColor(ContextCompat.getColor(this, R.color.color_emp))
+        } else {
+            tvModelStatus.text = "Model: Initializing..."
+            tvModelStatus.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+        }
+
+        // Frame Counters
+        tvFrameCounters.text = "Valid: ${state.validFrames} | Invalid: ${state.invalidFrames} | Dropped: ${state.droppedFrames} | Alerts: ${state.tamperAlerts}"
+
+        // Latest Protocol Error
+        tvLatestProtocolError.text = "Latest Protocol Error: ${state.latestProtocolError ?: "None"}"
+
+        // Classification & Confidence
+        tvClassification.text = state.predictedClass
+        val classColor = when (state.classIndex) {
+            ClassLabels.NORMAL.id -> ContextCompat.getColor(this, R.color.color_normal)
+            ClassLabels.EMP.id -> ContextCompat.getColor(this, R.color.color_emp)
+            ClassLabels.OPTICAL.id -> ContextCompat.getColor(this, R.color.color_optical)
+            ClassLabels.SURGE.id -> ContextCompat.getColor(this, R.color.color_surge)
+            else -> ContextCompat.getColor(this, R.color.color_normal)
         }
         tvClassification.setTextColor(classColor)
 
         val confPercent = (state.confidence * 100).toInt()
-        tvConfidence.text = getString(R.string.metric_confidence, confPercent)
+        tvConfidence.text = "Confidence: $confPercent%"
         pbConfidence.progress = confPercent
 
-        tvInferenceLatency.text = getString(R.string.metric_latency, state.latencyMs)
+        // Latency
+        tvInferenceLatency.text = "Inference Duration: ${state.inferenceLatencyUs} µs (${"%.2f".format(state.latencyMs)} ms)"
+
+        // Telemetry Metrics
         tvPeakVoltage.text = "${(state.peakVoltageV * 1000).toInt()} mV"
         tvOpticalSensor.text = "${(state.opticalSensorV * 1000).toInt()} mV"
         tvSequence.text = "#${state.currentSequenceId}"
 
+        // Buttons
         btnStartService.isEnabled = !state.isServiceRunning
         btnStopService.isEnabled = state.isServiceRunning
         btnInjectEmp.isEnabled = state.isServiceRunning

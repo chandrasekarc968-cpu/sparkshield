@@ -1,33 +1,26 @@
 package com.sparkshield.android.transport
 
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.Flow
 
 /**
  * Abstraction for smart-meter telemetry frame sources.
  *
- * Decouples the service and processing pipeline from the underlying transport,
- * allowing seamless switching between local mock stream (Phase 3) and BLE peripheral scanning (Phase 5).
+ * Exposes a stream of raw 29-byte packed big-endian frames.
+ * The system is software-only simulation.
  */
 interface TelemetryProvider {
-
     /**
-     * Shared flow emitting raw 29-byte big-endian telemetry frame buffers.
+     * Flow emitting raw 29-byte binary telemetry frames.
      */
-    val rawFrameFlow: SharedFlow<ByteArray>
-
-    /**
-     * Observable state flow indicating whether the transport is active and streaming.
-     */
-    val isConnected: StateFlow<Boolean>
+    val frames: Flow<ByteArray>
 
     /**
      * Start the telemetry ingestion pipeline.
      */
-    fun start()
+    suspend fun start()
 
     /**
      * Stop the telemetry ingestion pipeline and disconnect.
      */
-    fun stop()
+    suspend fun stop()
 }

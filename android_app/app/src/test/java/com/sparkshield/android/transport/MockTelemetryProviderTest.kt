@@ -1,7 +1,6 @@
 package com.sparkshield.android.transport
 
 import com.sparkshield.android.inference.ClassLabels
-import com.sparkshield.android.protocol.Crc16Ccitt
 import com.sparkshield.android.protocol.ProtocolResult
 import com.sparkshield.android.protocol.TelemetryFrame
 import com.sparkshield.android.protocol.TelemetryFrameParser
@@ -13,70 +12,106 @@ import org.junit.Test
 class MockTelemetryProviderTest {
 
     @Test
-    fun testDefaultFramesAreNormalAndValid() {
-        val provider = MockTelemetryProvider(rateHz = 10.0f, seed = 42L)
+    fun testDefaultDemoSequencePattern() {
+        val provider = MockTelemetryProvider(
+            intervalMs = 100L,
+            seed = 42L,
+            useDefaultDemoSequence = true
+        )
 
-        for (i in 0 until 10) {
-            val frame = provider.generateNextFrame()
-            assertEquals("Sequence must increment", i.toLong(), frame.sequenceId)
-            assertTrue("Default frame must be NORMAL", frame.isNormal)
-            assertFalse("Must not be EMP", frame.isEmp)
-            assertFalse("Must not be OPTICAL", frame.isOptical)
-            assertFalse("Must not be SURGE", frame.isSurge)
-
-            // Test wire serialization and CRC validation
-            val packed = TelemetryFrameParser.pack(frame)
-            assertEquals(29, packed.size)
-
-            val parsed = TelemetryFrameParser.parse(packed)
-            assertTrue(parsed is ProtocolResult.Success)
-        }
-    }
-
-    @Test
-    fun testTamperBurstInjectionLifecycle() {
-        val provider = MockTelemetryProvider(rateHz = 10.0f, seed = 123L)
-
-        // First 3 frames normal
-        for (i in 0 until 3) {
-            assertTrue(provider.generateNextFrame().isNormal)
-        }
-
-        // Trigger EMP burst of 3 frames
-        provider.triggerTamper(ClassLabels.EMP, burstCount = 3)
-
-        // Next 3 frames must be EMP
-        for (i in 0 until 3) {
+        // 1. 20 frames of NORMAL
+        for (i in 0 until 20) {
             val f = provider.generateNextFrame()
-            assertTrue("Frame must be EMP during burst", f.isEmp)
-            assertFalse("Frame must not be NORMAL during burst", f.isNormal)
-            assertTrue("EMP peak voltage must be high", f.peakMv >= 20000)
+            assertTrue("Frame $i must be NORMAL", f.isNormal)
+        }
+
+        // 2. 8 frames of EMP
+        for (i in 0 until 8) {
+            val f = provider.generateNextFrame()
+            assertTrue("Frame ${20 + i} must be EMP", f.isEmp)
+            assertTrue("EMP peak voltage must be high", f.peakMv in 20000..65535)
             assertTrue("EMP rise time code must be ultrafast (1..3)", f.riseTimeCode in 1..3)
             assertTrue("EMP decay time must be short (1..15 us)", f.decayTimeUs in 1..15)
         }
 
-        // Fourth frame must revert back to NORMAL
-        val revertedFrame = provider.generateNextFrame()
-        assertTrue("Frame must revert to NORMAL after burst", revertedFrame.isNormal)
+        // 3. 20 frames of NORMAL
+        for (i in 0 until 20) {
+            val f = provider.generateNextFrame()
+            assertTrue("Frame ${28 + i} must be NORMAL", f.isNormal)
+        }
+
+        // 4. 8 frames of OPTICAL
+        for (i in 0 until 8) {
+            val f = provider.generateNextFrame()
+            assertTrue("Frame ${48 + i} must be OPTICAL", f.isOptical)
+            assertTrue("Optical sensor must be saturated high", f.opticalSensorMv in 3200..5000)
+        }
+
+        // 5. 20 frames of NORMAL
+        for (i in 0 until 20) {
+            val f = provider.generateNextFrame()
+            assertTrue("Frame ${56 + i} must be NORMAL", f.isNormal)
+        }
+
+        // 6. 8 frames of SURGE
+        for (i in 0 until 8) {
+            val f = provider.generateNextFrame()
+            assertTrue("Frame ${76 + i} must be SURGE", f.isSurge)
+            assertTrue("Surge peak must be medium-high", f.peakMv in 6000..25000)
+        }
+
+        // 7. Loop repeats: next frame must be NORMAL
+        val repeated = provider.generateNextFrame()
+        assertTrue("Sequence must repeat back to NORMAL", repeated.isNormal)
     }
 
     @Test
-    fun testOpticalTamperProperties() {
-        val provider = MockTelemetryProvider(rateHz = 10.0f, seed = 777L)
-        provider.triggerTamper(ClassLabels.OPTICAL, burstCount = 1)
-        val f = provider.generateNextFrame()
+    fun testValidWireFormatAndCrcOnAllGeneratedFrames() {
+        val provider = MockTelemetryProvider(intervalMs = 100L, seed = 100L)
 
-        assertTrue(f.isOptical)
-        assertTrue("Optical sensor mV must be saturated high", f.opticalSensorMv >= 3200)
+        for (i in 0 until 50) {
+            val frameBytes = provider.generateNextFrameBytes()
+            assertEquals("Packed frame must be 29 bytes", 29, frameBytes.size)
+
+            val parsedResult = TelemetryFrameParser.parse(frameBytes)
+            assertTrue("Every generated frame must pass parsing & CRC validation", parsedResult is ProtocolResult.Success)
+        }
     }
 
     @Test
-    fun testSurgeTamperProperties() {
-        val provider = MockTelemetryProvider(rateHz = 10.0f, seed = 888L)
-        provider.triggerTamper(ClassLabels.SURGE, burstCount = 1)
-        val f = provider.generateNextFrame()
+    fun testMalformedFrameInjectionAndRecovery() {
+        val provider = MockTelemetryProvider(intervalMs = 100L, seed = 555L)
 
-        assertTrue(f.isSurge)
-        assertTrue("Surge peak must be medium-high (>= 6000 mV)", f.peakMv >= 6000)
+        // Generate normal valid frame
+        val validBytes = provider.generateNextFrameBytes()
+        assertTrue(TelemetryFrameParser.parse(validBytes) is ProtocolResult.Success)
+
+        // Inject malformed frame
+        provider.nextFrameMalformed = true
+        val malformedBytes = provider.generateNextFrameBytes()
+        val failResult = TelemetryFrameParser.parse(malformedBytes)
+        assertTrue("Injected malformed frame must be rejected", failResult is ProtocolResult.Failure)
+
+        // Subsequent frame must automatically recover to valid data
+        val recoveredBytes = provider.generateNextFrameBytes()
+        val recoveredResult = TelemetryFrameParser.parse(recoveredBytes)
+        assertTrue("Subsequent frame must recover cleanly", recoveredResult is ProtocolResult.Success)
+    }
+
+    @Test
+    fun testDeterministicSeedReproduction() {
+        val provider1 = MockTelemetryProvider(seed = 9999L)
+        val provider2 = MockTelemetryProvider(seed = 9999L)
+
+        for (i in 0 until 10) {
+            val f1 = provider1.generateNextFrame()
+            val f2 = provider2.generateNextFrame()
+
+            assertEquals(f1.sequenceId, f2.sequenceId)
+            assertEquals(f1.peakMv, f2.peakMv)
+            assertEquals(f1.riseTimeCode, f2.riseTimeCode)
+            assertEquals(f1.decayTimeUs, f2.decayTimeUs)
+            assertEquals(f1.opticalSensorMv, f2.opticalSensorMv)
+        }
     }
 }
