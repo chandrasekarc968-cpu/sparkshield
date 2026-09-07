@@ -1,0 +1,98 @@
+{
+  "model_name": "SparkShield-1D-CNN",
+  "checkpoint_path": "models/sparkshield_1d_cnn.pt",
+  "input_shape": [
+    1,
+    1,
+    128
+  ],
+  "num_classes": 4,
+  "class_names": [
+    "NORMAL",
+    "EMP",
+    "OPTICAL",
+    "SURGE"
+  ],
+  "overall_accuracy": 1.0,
+  "macro_f1": 1.0,
+  "fpr_on_normal": 0.0,
+  "per_class_metrics": {
+    "NORMAL": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "support": 200
+    },
+    "EMP": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "support": 200
+    },
+    "OPTICAL": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "support": 200
+    },
+    "SURGE": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "support": 200
+    }
+  },
+  "confusion_matrix": [
+    [
+      200,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      200,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      200,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      200
+    ]
+  ],
+  "normalization": {
+    "peak_mv_scale": 65535.0,
+    "rise_time_scale": 65535.0,
+    "decay_time_scale": 65535.0,
+    "optical_mv_scale": 65535.0,
+    "optical_rail_mv": 5000.0,
+    "fft_energy_scale": 255.0,
+    "feature_range": [
+      0.0,
+      1.0
+    ]
+  },
+  "training_config": {
+    "epochs": 5,
+    "batch_size": 32,
+    "lr": 0.001,
+    "optimizer": "Adam",
+    "loss": "CrossEntropyLoss",
+    "train_samples_per_class": 1000,
+    "val_samples_per_class": 200,
+    "test_samples_per_class": 200,
+    "device": "cpu"
+  },
+  "confidence_threshold_policy": {
+    "alert_threshold": 0.85,
+    "description": "Alerts and haptics triggered only when classification confidence >= 0.85"
+  }
+}

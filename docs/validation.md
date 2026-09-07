@@ -2,7 +2,9 @@
 
 ## 1. Automated Test Matrix
 
-The following test suite validates the core cyber-physical virtual meter and protocol layers:
+The following test suite validates the core cyber-physical virtual meter, protocol, and ML pipeline layers:
+
+### Phase 1: Virtual Meter Core & Protocol Tests (`python_core/tests`)
 
 | ID | Test Case | Target / Function | Pass Criteria | Status |
 | :--- | :--- | :--- | :--- | :--- |
@@ -24,14 +26,28 @@ The following test suite validates the core cyber-physical virtual meter and pro
 | `TC-16` | Tamper Burst Lifecycle | `test_tamper_burst_injection_lifecycle` | Injected tamper class persists for requested burst count and reverts | **PASS** |
 | `TC-17` | Packet Loss Simulation | `test_transport_packet_loss_simulation` | Simulated loss ratio properly drops packets in loopback queue | **PASS** |
 
+### Phase 2: Edge ML Pipeline, ONNX, and Quantization Tests (`models/tests`)
+
+| ID | Test Case | Target / Function | Pass Criteria | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| `TC-18` | Dataset Shapes and Types | `test_dataset_generation_shapes_and_types` | `X` is strictly `(N, 1, 128)` float32, `y` is `(N,)` int64, class balanced | **PASS** |
+| `TC-19` | Leak-Free Split Isolation | `test_leak_free_split_isolation` | No identical samples exist between train, val, and test splits | **PASS** |
+| `TC-20` | Model Forward Pass | `test_model_forward_pass` | `SparkShield1DCNN` transforms `(B, 1, 128)` to `(B, 4)` across batch sizes | **PASS** |
+| `TC-21` | Mini-Training & Checkpoint | `test_mini_training_and_checkpoint_payload` | Loss decreases, validation Macro F1 computed, checkpoint keys complete | **PASS** |
+| `TC-22` | Static ONNX Dimensions | `test_onnx_export_static_shape_and_validation` | Input is static `[1, 1, 128]`, output is static `[1, 4]`, passes checker | **PASS** |
+| `TC-23` | ONNX Numerical Parity | `test_onnx_runtime_inference_numerical_parity` | PyTorch and ONNX Runtime outputs match within $\le 10^{-5}$ tolerance | **PASS** |
+| `TC-24` | Calibration Generator | `test_calibration_dataset_generator` | 200 balanced samples `(200, 1, 128)`, manifest distributions verified | **PASS** |
+| `TC-25` | Calibration Data Reader | `test_calibration_data_reader` | Yields dict with `(1, 1, 128)` arrays with exact input node name | **PASS** |
+| `TC-26` | INT8 Quantization & Manifest | `test_int8_quantization_and_manifest_recording` | Static QDQ ONNX executes to `(1, 4)`, scale/zero-point parameters recorded | **PASS** |
+
 ---
 
 ## 2. Running Automated Tests
 
-Execute the complete Python test suite via pytest:
+Execute the complete 36-test suite across Phase 1 and Phase 2:
 
 ```powershell
-python -m pytest python_core/tests -v
+python -m pytest python_core/tests models/tests -v
 ```
 
 Expected output:
@@ -41,7 +57,10 @@ python_core/tests/test_feature_extractor.py .... [PASS]
 python_core/tests/test_mock_stream.py .......... [PASS]
 python_core/tests/test_protocol.py ............. [PASS]
 python_core/tests/test_signal_models.py ........ [PASS]
-============================= 27 passed in 0.43s ==============================
+models/tests/test_onnx_export.py ............... [PASS]
+models/tests/test_quantization.py .............. [PASS]
+models/tests/test_training_pipeline.py ......... [PASS]
+============================= 36 passed in 18.36s ==============================
 ```
 
 ---
@@ -49,6 +68,6 @@ python_core/tests/test_signal_models.py ........ [PASS]
 ## 3. Known Limitations and Phase Boundaries
 
 1. **Analytic EMP Transient Model**:
-   - EMP pulses are simulated analytically through physics equations rather than RF ADC sampling to respect Nyquist limits on standard microcontrollers.
+   - EMP pulses are simulated analytically through transient differential equations rather than raw RF ADC sampling to avoid Nyquist aliasing.
 2. **Hardware Acceleration Status**:
-   - QNN/Hexagon HTP hardware acceleration is currently architectural and behind the `InferenceEngine` interface; it is not marked complete until validated on physical Qualcomm hardware.
+   - Quantized ONNX model has been verified with ONNX Runtime CPU. Qualcomm QNN/QAIRT Hexagon HTP execution is architectural and will be benchmarked on target Qualcomm hardware in Phase 7.

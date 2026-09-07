@@ -1,0 +1,143 @@
+{
+  "dataset_name": "SparkShield-INT8-Calibration",
+  "total_samples": 200,
+  "samples_per_class": 50,
+  "classes": [
+    "NORMAL",
+    "EMP",
+    "OPTICAL",
+    "SURGE"
+  ],
+  "class_distribution": {
+    "NORMAL": 50,
+    "EMP": 50,
+    "OPTICAL": 50,
+    "SURGE": 50
+  },
+  "input_tensor_shape": [
+    1,
+    128
+  ],
+  "data_min": 0.0,
+  "data_max": 0.9960784316062927,
+  "data_mean": 0.24627017974853516,
+  "data_std": 0.3589075803756714,
+  "seed": 999,
+  "quantized_model_path": "models/sparkshield_1d_cnn_quant.onnx",
+  "quantization_format": "QDQ",
+  "activation_type": "QInt8",
+  "weight_type": "QInt8",
+  "per_channel": false,
+  "calibration_method": "MinMax",
+  "quantization_parameters": {
+    "tensors": {
+      "input_zero": {
+        "zero_point": -128.0
+      },
+      "input": {
+        "scale": 0.0039061899296939373
+      },
+      "onnx::Conv_50_zero": {
+        "zero_point": 0.0
+      },
+      "onnx::Conv_50": {
+        "scale": 0.017578693106770515
+      },
+      "/features/features.2/Relu_output_0_zero": {
+        "zero_point": -128.0
+      },
+      "/features/features.2/Relu_output_0": {
+        "scale": 0.01385007705539465
+      },
+      "onnx::Conv_53_zero": {
+        "zero_point": 0.0
+      },
+      "onnx::Conv_53": {
+        "scale": 0.0086903627961874
+      },
+      "/features/features.6/Relu_output_0_zero": {
+        "zero_point": -128.0
+      },
+      "/features/features.6/Relu_output_0": {
+        "scale": 0.025228003039956093
+      },
+      "onnx::Conv_56_zero": {
+        "zero_point": 0.0
+      },
+      "onnx::Conv_56": {
+        "scale": 0.0067505245096981525
+      },
+      "/features/features.10/Relu_output_0_zero": {
+        "zero_point": -128.0
+      },
+      "/features/features.10/Relu_output_0": {
+        "scale": 0.03509574756026268
+      },
+      "/features/features.11/GlobalAveragePool_output_0_zero": {
+        "zero_point": -128.0
+      },
+      "/features/features.11/GlobalAveragePool_output_0": {
+        "scale": 0.004067066591233015
+      },
+      "classifier.0.weight_zero": {
+        "zero_point": 0.0
+      },
+      "classifier.0.weight": {
+        "scale": 0.001969203120097518
+      },
+      "/classifier/classifier.1/Relu_output_0_zero": {
+        "zero_point": -128.0
+      },
+      "/classifier/classifier.1/Relu_output_0": {
+        "scale": 0.009781984612345695
+      },
+      "logits_zero": {
+        "zero_point": -20.0
+      },
+      "logits": {
+        "scale": 0.019940072670578957
+      },
+      "classifier.2.weight_zero": {
+        "zero_point": 0.0
+      },
+      "classifier.2.weight": {
+        "scale": 0.002331861760467291
+      },
+      "onnx::Conv_51_quantized": {
+        "scale": 6.866571493446827e-05
+      },
+      "onnx::Conv_51_quantized_zero": {
+        "zero_point": 0.0
+      },
+      "onnx::Conv_54_quantized": {
+        "scale": 0.00012036219413857907
+      },
+      "onnx::Conv_54_quantized_zero": {
+        "zero_point": 0.0
+      },
+      "onnx::Conv_57_quantized": {
+        "scale": 0.000170302257174626
+      },
+      "onnx::Conv_57_quantized_zero": {
+        "zero_point": 0.0
+      },
+      "classifier.0.bias_quantized": {
+        "scale": 8.008880286070053e-06
+      },
+      "classifier.0.bias_quantized_zero": {
+        "zero_point": 0.0
+      },
+      "classifier.2.bias_quantized": {
+        "scale": 2.2810236259829253e-05
+      },
+      "classifier.2.bias_quantized_zero": {
+        "zero_point": 0.0
+      }
+    },
+    "summary": {
+      "total_initializers": 44,
+      "quantized_initializers": 34
+    }
+  },
+  "edge_deployment_dequantization_rule": "Dequantize signed INT8 using formula: float_value = (int8_value - zero_point) * scale. Do NOT cast signed INT8 values directly as unsigned bytes."
+}
