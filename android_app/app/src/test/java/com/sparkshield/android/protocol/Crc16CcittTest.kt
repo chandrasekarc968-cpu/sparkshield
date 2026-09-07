@@ -10,10 +10,12 @@ class Crc16CcittTest {
     fun testStandardCheckVector() {
         // Standard check sequence: ASCII "123456789" -> 0x29B1 (10673)
         val data = "123456789".toByteArray(Charsets.US_ASCII)
-        val crcTable = Crc16Ccitt.compute(data)
+        val crcCalculate = Crc16Ccitt.calculate(data)
+        val crcCompute = Crc16Ccitt.compute(data)
         val crcBitwise = Crc16Ccitt.computeBitwise(data)
 
-        assertEquals("Table CRC must equal 0x29B1", 0x29B1, crcTable)
+        assertEquals("calculate() CRC must equal 0x29B1", 0x29B1, crcCalculate)
+        assertEquals("compute() CRC must equal 0x29B1", 0x29B1, crcCompute)
         assertEquals("Bitwise CRC must equal 0x29B1", 0x29B1, crcBitwise)
     }
 
@@ -25,7 +27,7 @@ class Crc16CcittTest {
             val buffer = ByteArray(length)
             rng.nextBytes(buffer)
 
-            val tableResult = Crc16Ccitt.compute(buffer)
+            val tableResult = Crc16Ccitt.calculate(buffer)
             val bitwiseResult = Crc16Ccitt.computeBitwise(buffer)
 
             assertEquals("Trial $trial mismatch", bitwiseResult, tableResult)
@@ -37,7 +39,7 @@ class Crc16CcittTest {
         val full = "PRE_123456789_POST".toByteArray(Charsets.US_ASCII)
         val offset = 4
         val length = 9
-        val crc = Crc16Ccitt.compute(full, offset, length)
+        val crc = Crc16Ccitt.calculate(full, offset, length)
         assertEquals(0x29B1, crc)
     }
 }

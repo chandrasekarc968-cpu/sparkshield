@@ -64,6 +64,11 @@ data class TelemetryFrame(
     val isNormal: Boolean
         get() = (eventFlags and FLAG_NORMAL) != 0
 
+    /**
+     * Serializes this frame to 29-byte big-endian packed wire format with CRC-16.
+     */
+    fun toByteArray(): ByteArray = TelemetryFrameParser.pack(this)
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false

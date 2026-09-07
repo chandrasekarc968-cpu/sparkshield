@@ -33,11 +33,24 @@ object Crc16Ccitt {
     /**
      * Compute CRC-16-CCITT over a byte array using the 256-entry lookup table.
      *
-     * @param data Byte array over which to compute CRC.
+     * @param bytes Byte array over which to compute CRC.
      * @param offset Starting offset.
      * @param length Number of bytes to include.
-     * @param init Initial shift register value (default 0xFFFF).
      * @return 16-bit unsigned integer CRC result (0..65535).
+     */
+    fun calculate(bytes: ByteArray, offset: Int = 0, length: Int = bytes.size): Int {
+        var crc = INITIAL_VALUE and 0xFFFF
+        val end = offset + length
+        for (i in offset until end) {
+            val byteVal = bytes[i].toInt() and 0xFF
+            val tableIndex = ((crc ushr 8) xor byteVal) and 0xFF
+            crc = (TABLE[tableIndex] xor (crc shl 8)) and 0xFFFF
+        }
+        return crc
+    }
+
+    /**
+     * Alias for calculate(bytes, offset, length) for backward-compatibility.
      */
     fun compute(data: ByteArray, offset: Int = 0, length: Int = data.size, init: Int = INITIAL_VALUE): Int {
         var crc = init and 0xFFFF

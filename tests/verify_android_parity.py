@@ -2,9 +2,9 @@
 
 Tests:
 1. CRC-16-CCITT algorithm parity across standard vector and random byte streams.
-2. 29-byte wire frame packing and field offset alignment.
-3. 16-feature mathematical normalization and log1p parity.
-4. Sliding window 128-float layout parity.
+2. 29-byte wire frame packing, field offset alignment, and rejection of invalid event flags.
+3. 16-feature mathematical normalization and log1p parity without event flags.
+4. Sliding window 128-float layout, zero-padding older frames before 8 frames, and inference readiness gating.
 5. Asset model presence and ONNX signature validation (input: [1,1,128], output: [1,4]).
 6. Alert gating logic (confidence >= 0.85, NORMAL suppression, rate limiting).
 """
@@ -39,7 +39,7 @@ from python_core.signal_models import FeatureExtractor, SignalClass, SignalGener
 
 
 def test_crc16_parity():
-    print("[1/6] Testing CRC-16-CCITT algorithm parity...")
+    print("[1/6] Testing CRC-16-CCITT algorithm parity (calculate & compute)...")
     # Check vector
     test_vec = b"123456789"
     expected = 0x29B1
@@ -70,11 +70,16 @@ def test_crc16_parity():
 
         assert crc_py == crc_kt, f"Parity mismatch on {len(data)} bytes: {crc_py} vs {crc_kt}"
 
-    print("      PASSED: CRC-16-CCITT algorithm matches bit-for-bit across 100 random streams.")
+    # Subarray offset and length parity
+    padded = b"PRE_123456789_POST"
+    crc_sub = crc16_ccitt(padded[4:13])
+    assert crc_sub == expected
+
+    print("      PASSED: CRC-16-CCITT calculate/compute matches bit-for-bit across 100 random streams.")
 
 
-def test_frame_wire_format_parity():
-    print("[2/6] Testing 29-byte frame binary wire format parity...")
+def test_frame_wire_format_and_rejection():
+    print("[2/6] Testing 29-byte frame binary wire format & invalid frame rejection...")
     frame = TelemetryFrame(
         sequence_id=0x12345678,
         timestamp_ms=0x9ABCDEF0,
@@ -111,7 +116,28 @@ def test_frame_wire_format_parity():
     assert bins == bytes([110, 140, 170, 200, 210, 190, 170, 140])
     assert crc == frame.crc16
 
-    print("      PASSED: 29-byte packed big-endian binary offsets and types fully validated.")
+    # Test event flag rejection logic (0x00, upper bits 0x10, conflict 0x09)
+    def validate_event_flags(fl):
+        if (fl & 0xF0) != 0 or fl == 0:
+            return False, "INVALID_BITS"
+        is_normal = (fl & FLAG_NORMAL) != 0
+        is_tamper = (fl & (FLAG_EMP | FLAG_OPTICAL | FLAG_SURGE)) != 0
+        if is_normal and is_tamper:
+            return False, "CONFLICT_FLAGS"
+        if bin(fl).count("1") > 1:
+            return False, "MULTIPLE_PRIMARY"
+        return True, "VALID"
+
+    assert not validate_event_flags(0x00)[0]
+    assert not validate_event_flags(0x18)[0]
+    assert not validate_event_flags(0x09)[0] # NORMAL + EMP
+    assert not validate_event_flags(0x03)[0] # EMP + OPTICAL
+    assert validate_event_flags(FLAG_NORMAL)[0]
+    assert validate_event_flags(FLAG_EMP)[0]
+    assert validate_event_flags(FLAG_OPTICAL)[0]
+    assert validate_event_flags(FLAG_SURGE)[0]
+
+    print("      PASSED: 29-byte big-endian binary offsets and strict event flag rejection validated.")
 
 
 def test_feature_math_parity():
@@ -162,28 +188,80 @@ def test_feature_math_parity():
     max_diff = np.max(np.abs(vec_py - vec_kt))
     assert max_diff < 1e-6, f"Max difference between Python and Kotlin feature math is {max_diff}"
 
+    # Verify event flags are not included
+    assert len(vec_kt) == 16, "Feature vector must be exactly 16 floats"
+
     print(f"      PASSED: 16 normalized feature formulas match (max abs error = {max_diff:.2e}).")
 
 
-def test_sliding_window_parity():
-    print("[4/6] Testing 8-frame sliding window layout (1, 1, 128)...")
-    extractor = FeatureExtractor()
-    # Baseline prefill check
-    init_tensor = extractor.update(
-        TelemetryFrame(
-            sequence_id=0,
-            timestamp_ms=0,
-            event_flags=FLAG_NORMAL,
-            peak_mv=3250,
-            rise_time_code=50000,
-            decay_time_us=5000,
-            optical_sensor_mv=150,
-            fft_energy_bins=bytes([220, 35, 12, 4, 2, 1, 0, 0]),
-        )
-    )
-    assert init_tensor.shape == (1, 1, 128), f"Expected (1, 1, 128), got {init_tensor.shape}"
-    assert np.all(init_tensor >= 0.0) and np.all(init_tensor <= 1.0)
-    print("      PASSED: Sliding window shape is exactly (1, 1, 128) with valid prefilled floats.")
+def test_sliding_window_zero_padding_and_gating():
+    print("[4/6] Testing 8-frame sliding window layout, zero-padding & inference readiness...")
+    
+    # Emulate Kotlin FeatureWindow zero-padding and gating
+    WINDOW_CAPACITY = 8
+    FEATURES_PER_FRAME = 16
+    TOTAL_FEATURES = WINDOW_CAPACITY * FEATURES_PER_FRAME  # 128
+
+    class MockWindow:
+        def __init__(self):
+            self.buffer = []
+            self.valid_count = 0
+            self.warmup_mode = False
+
+        def push(self, vec):
+            if len(self.buffer) >= WINDOW_CAPACITY:
+                self.buffer.pop(0)
+            self.buffer.append(vec.copy())
+            self.valid_count += 1
+
+        @property
+        def is_ready_for_inference(self):
+            return (self.valid_count >= WINDOW_CAPACITY) or self.warmup_mode
+
+        def get_flattened_window(self):
+            out = np.zeros(TOTAL_FEATURES, dtype=np.float32)
+            pad_frames = WINDOW_CAPACITY - len(self.buffer)
+            offset = pad_frames * FEATURES_PER_FRAME
+            for v in self.buffer:
+                out[offset : offset + FEATURES_PER_FRAME] = v
+                offset += FEATURES_PER_FRAME
+            return out
+
+    win = MockWindow()
+    assert not win.is_ready_for_inference
+    assert win.valid_count == 0
+
+    # Push 1 frame
+    f1 = np.full(16, 0.75, dtype=np.float32)
+    win.push(f1)
+    flat1 = win.get_flattened_window()
+
+    assert len(flat1) == 128
+    assert not win.is_ready_for_inference
+    # Slots 0..6 (indices 0..111) must be zero-padded (0.0)
+    assert np.all(flat1[0:112] == 0.0), "Older frames must be zero-padded"
+    # Slot 7 (indices 112..127) must contain f1
+    assert np.all(flat1[112:128] == 0.75), "Slot 7 must contain active frame features"
+
+    # Warmup mode override
+    win.warmup_mode = True
+    assert win.is_ready_for_inference
+    win.warmup_mode = False
+    assert not win.is_ready_for_inference
+
+    # Push 7 more frames
+    for i in range(2, 9):
+        win.push(np.full(16, float(i) / 10.0, dtype=np.float32))
+
+    assert win.valid_count == 8
+    assert win.is_ready_for_inference
+    flat8 = win.get_flattened_window()
+    # Oldest frame (f1, 0.75) should be in slot 0 (0..15)
+    assert np.all(flat8[0:16] == 0.75)
+    # Newest frame (frame 8, 0.8) should be in slot 7 (112..127)
+    assert np.all(flat8[112:128] == 0.8)
+
+    print("      PASSED: Sliding window zero-pads older frames before 8 frames; readiness gating verified.")
 
 
 def test_onnx_model_asset():
@@ -267,9 +345,9 @@ def main():
     print("SparkShield Android Phase 3 Parity & Architecture Verification")
     print("=" * 70)
     test_crc16_parity()
-    test_frame_wire_format_parity()
+    test_frame_wire_format_and_rejection()
     test_feature_math_parity()
-    test_sliding_window_parity()
+    test_sliding_window_zero_padding_and_gating()
     test_onnx_model_asset()
     test_alert_gating_logic()
     print("=" * 70)

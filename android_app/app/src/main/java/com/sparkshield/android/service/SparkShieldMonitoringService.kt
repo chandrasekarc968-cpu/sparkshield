@@ -124,16 +124,30 @@ class SparkShieldMonitoringService : Service() {
                 when (val parseResult = TelemetryFrameParser.parse(rawBytes)) {
                     is ProtocolResult.Success -> {
                         val frame = parseResult.frame
-                        val seqResult = sequenceTracker.processSequence(frame.sequenceId)
+                        val seqStatus = sequenceTracker.process(frame.sequenceId)
 
                         // 1. Sliding window feature extraction (128 floats)
                         val featureTensor = featureExtractor.update(frame)
 
-                        // 2. Edge ONNX Runtime inference
-                        val inferenceResult = inferenceEngine.predict(featureTensor)
+                        // 2. Only execute edge neural network inference when at least 8 frames are accumulated
+                        // (unless warm-up mode is explicitly enabled)
+                        val inferenceResult = if (featureExtractor.isReadyForInference) {
+                            inferenceEngine.predict(featureTensor)
+                        } else {
+                            InferenceResult(
+                                predictedClass = ClassLabels.NORMAL,
+                                confidence = 1.0f,
+                                probabilities = floatArrayOf(1.0f, 0.0f, 0.0f, 0.0f),
+                                latencyMs = 0.0f
+                            )
+                        }
 
-                        // 3. Confidence-gated alert decision (>= 0.85, rate-limited)
-                        val alertDecision = alertGate.evaluate(inferenceResult)
+                        // 3. Confidence-gated alert decision (>= 0.85, rate-limited, strictly when ready)
+                        val alertDecision = if (featureExtractor.isReadyForInference) {
+                            alertGate.evaluate(inferenceResult)
+                        } else {
+                            AlertGate.AlertDecision.Suppressed(AlertGate.SuppressionReason.NORMAL_CLASS)
+                        }
 
                         var newTamperEvent: TamperEvent? = null
                         if (alertDecision is AlertGate.AlertDecision.TriggerAlert) {

@@ -1,8 +1,21 @@
 package com.sparkshield.android.protocol
 
 /**
+ * Status resulting from processing a telemetry frame sequence ID.
+ */
+sealed class SequenceStatus {
+    object Continuous : SequenceStatus()
+    data class Gap(val droppedCount: Long) : SequenceStatus()
+    object Duplicate : SequenceStatus()
+    object OutOfOrder : SequenceStatus()
+
+    val isContinuous: Boolean
+        get() = this is Continuous
+}
+
+/**
  * Tracks packet sequence continuity, detecting dropped frames, duplicates, and 32-bit wrap-around.
- * Parity with python_core/frame_protocol.py:SequenceTracker.
+ * Exact parity with python_core/frame_protocol.py:SequenceTracker.
  */
 class SequenceTracker(initialSequence: Long? = null) {
 
@@ -24,30 +37,30 @@ class SequenceTracker(initialSequence: Long? = null) {
     data class SequenceResult(val isContinuous: Boolean, val droppedCount: Long)
 
     /**
-     * Process a newly received sequence ID.
+     * Process a newly received sequence ID and return structured [SequenceStatus].
      *
      * @param sequenceId 32-bit unsigned sequence number.
-     * @return [SequenceResult] indicating continuity and number of dropped frames.
+     * @return [SequenceStatus] (Continuous, Gap, Duplicate, or OutOfOrder).
      */
-    fun processSequence(sequenceId: Long): SequenceResult {
+    fun process(sequenceId: Long): SequenceStatus {
         totalReceived++
 
         val last = lastSequence
         if (last == null) {
             lastSequence = sequenceId
-            return SequenceResult(isContinuous = true, droppedCount = 0)
+            return SequenceStatus.Continuous
         }
 
         val expected = (last + 1L) and 0xFFFFFFFFL
 
         if (sequenceId == expected) {
             lastSequence = sequenceId
-            return SequenceResult(isContinuous = true, droppedCount = 0)
+            return SequenceStatus.Continuous
         }
 
         if (sequenceId == last) {
             totalDuplicates++
-            return SequenceResult(isContinuous = false, droppedCount = 0)
+            return SequenceStatus.Duplicate
         }
 
         // Account for 32-bit unsigned wrap-around
@@ -58,11 +71,23 @@ class SequenceTracker(initialSequence: Long? = null) {
             val dropped = diff - 1L
             totalDropped += dropped
             lastSequence = sequenceId
-            SequenceResult(isContinuous = false, droppedCount = dropped)
+            SequenceStatus.Gap(dropped)
         } else {
-            // Out of order or stale packet
+            // Out of order or stale duplicate packet
             totalOutOfOrder++
-            SequenceResult(isContinuous = false, droppedCount = 0)
+            SequenceStatus.OutOfOrder
+        }
+    }
+
+    /**
+     * Legacy adapter returning [SequenceResult].
+     */
+    fun processSequence(sequenceId: Long): SequenceResult {
+        return when (val status = process(sequenceId)) {
+            is SequenceStatus.Continuous -> SequenceResult(isContinuous = true, droppedCount = 0)
+            is SequenceStatus.Gap -> SequenceResult(isContinuous = false, droppedCount = status.droppedCount)
+            is SequenceStatus.Duplicate -> SequenceResult(isContinuous = false, droppedCount = 0)
+            is SequenceStatus.OutOfOrder -> SequenceResult(isContinuous = false, droppedCount = 0)
         }
     }
 
