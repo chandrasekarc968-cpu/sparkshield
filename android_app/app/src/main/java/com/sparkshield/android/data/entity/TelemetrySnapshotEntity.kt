@@ -2,13 +2,20 @@ package com.sparkshield.android.data.entity
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
  * Room entity storing periodic or trigger-based telemetry snapshots for
  * forensic analysis and grid baseline audit logging.
  */
-@Entity(tableName = "telemetry_snapshots")
+@Entity(
+    tableName = "telemetry_snapshots",
+    indices = [
+        Index(value = ["timestamp_ms"]),
+        Index(value = ["tamper_detected"])
+    ]
+)
 data class TelemetrySnapshotEntity(
     @PrimaryKey(autoGenerate = true)
     @ColumnInfo(name = "id")

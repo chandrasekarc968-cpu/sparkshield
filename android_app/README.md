@@ -248,24 +248,38 @@ Configurable at runtime via Intent extra `SparkShieldMonitoringService.EXTRA_PRO
 
 ---
 
-## 9. On-Device Room Database Persistence (Phase 6)
+## 9. On-Device Room Database Persistence & Automation (Phase 6)
 
-`SparkShieldDatabase` (`sparkshield_edge.db`) provides local SQLite audit logging for alerts and telemetry snapshots:
+`SparkShieldDatabase` (`sparkshield_edge.db`, Version 2) provides on-device SQLite audit logging for tamper alerts and telemetry snapshots:
 - **`TamperEventEntity` (`tamper_events`)**:
   - Automatically records confirmed tamper alerts (`EMP`, `OPTICAL`, `SURGE`) with confidence $\ge 0.85$.
   - Stores `timestamp_ms`, `sequence_id`, `class_name`, `confidence`, `peak_mv`, `rise_time_ns`, `decay_time_us`, `optical_mv`, and `message`.
-  - Cap: 1,000 events (oldest evicted automatically).
+  - Indexes on `(timestamp_ms)` and `(class_name)` for rapid timeline and alert filtering.
+  - Strict bounded capacity: 1,000 events (oldest evicted automatically via SQL trigger/query).
 - **`TelemetrySnapshotEntity` (`telemetry_snapshots`)**:
   - Records periodic 12-field telemetry frames for baseline auditing and forensics.
-  - Cap: 5,000 snapshots (oldest evicted automatically).
+  - Indexes on `(timestamp_ms)` and `(tamper_detected)`.
+  - Strict bounded capacity: 5,000 snapshots (oldest evicted automatically).
+- **Schema Migration**:
+  - Incremented to Version 2 with explicit `MIGRATION_1_2` creating necessary indexes without relying on destructive migration in production.
 
-### Backpressure & Flash Wear Protection
+### Backpressure, Flash Wear Protection & Error Handling
 - **Zero Synchronous Flash Writes**: High-frequency frames (10–50 Hz) are never written directly to SQLite synchronously.
-- **In-Memory Batch Buffer**: Telemetry frames are queued in memory (`DEFAULT_BATCH_FLUSH_SIZE = 20`, flush interval = 2s) and written asynchronously on `Dispatchers.IO` in batch transactions.
-- **Immediate Alert Dispatch**: Tamper events are dispatched asynchronously on `Dispatchers.IO` immediately without blocking the frame processing pipeline.
+- **Bounded In-Memory Batch Buffer**: Telemetry frames are queued in memory (`DEFAULT_BATCH_FLUSH_SIZE = 20`, flush interval = 2s, max buffer = 1,000) and written asynchronously on `Dispatchers.IO` in batch transactions.
+- **Immediate Alert Dispatch**: Tamper events are dispatched asynchronously on `Dispatchers.IO` immediately without blocking the frame processing pipeline or BLE callbacks.
+- **Failure Resilience & Re-queuing**: If SQLite write fails, the error is logged, exposed via `persistenceError` and `persistenceFailureCount` StateFlows, and unwritten records are safely re-queued in the in-memory buffer. Dropped records are tracked via `droppedSnapshotsCount`.
+- **Clean Shutdown Flush**: `stopMonitoring()` flushes pending snapshots synchronously with a 2-second timeout before canceling the service coroutine scope.
+
+### WebSocket Publisher & Node-RED Integration
+- **Canonical Endpoint**: `ws://localhost:8765/telemetry` (default port 8765).
+- **ADB Port Forwarding**: For local desktop tools (Node-RED, web dashboard), run:
+  ```bash
+  adb reverse tcp:8765 tcp:8765
+  ```
+- **Node-RED Flow**: Imports from `automation/node-red-flow.json`. Features connection health tracking, 12-field ingestion, 5-second per-class debouncing, and configurable MQTT / HTTP webhook alert dispatchers.
 
 ---
 
 ## 10. Deferred Phases & Rationale
 
-- **Phase 7 (Qualcomm QNN / Hexagon HTP Acceleration)**: Deferred until CPU ONNX baseline is established; isolated behind `InferenceEngine`.
+- **Phase 7 (Qualcomm QNN / Hexagon HTP Acceleration)**: Must not begin until Phase 6 passes complete validation. Edge inference currently executes on CPU via ONNX Runtime Android (`ai.onnxruntime:onnxruntime-android:1.19.0`) behind the pluggable `InferenceEngine` interface.

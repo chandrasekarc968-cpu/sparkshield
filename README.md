@@ -300,36 +300,55 @@ cd dashboard && npm test && npm run build
 Phase 6 implements local SQLite audit logging via Android Jetpack Room and provides an industrial automation integration bridge via Node-RED.
 
 ### On-Device Room Database Persistence
-- **Database**: `SparkShieldDatabase` (`sparkshield_edge.db`)
+- **Database**: `SparkShieldDatabase` (`sparkshield_edge.db`, Schema Version 2)
+- **Indexes & Migration Strategy**:
+  - `tamper_events`: Indexes on `(timestamp_ms)` and `(class_name)`.
+  - `telemetry_snapshots`: Indexes on `(timestamp_ms)` and `(tamper_detected)`.
+  - Upgrades from Version 1 to Version 2 use deterministic `MIGRATION_1_2` (`CREATE INDEX IF NOT EXISTS`) without relying on destructive migration fallback in production.
 - **TamperEventEntity (`tamper_events`)**:
   - Automatically records confirmed tamper alerts (`EMP`, `OPTICAL`, `SURGE`) with confidence $\ge 0.85$.
-  - Captures timestamp, sequence ID, classification, confidence, peak voltage, rise time, decay time, and optical sensor readings.
+  - Captures timestamp, sequence ID, classification, confidence, peak voltage, rise time, decay time, optical sensor readings, and message.
   - Strict bounded capacity: auto-evicts oldest records to cap table size at **1,000 events**.
 - **TelemetrySnapshotEntity (`telemetry_snapshots`)**:
   - Periodically audits 12-field telemetry frames for forensic analysis.
-  - **Flash Wear Prevention**: High-frequency telemetry (10–50 Hz) is queued in memory (`DEFAULT_BATCH_FLUSH_SIZE = 20`, flush interval = 2s) and written asynchronously on `Dispatchers.IO` in transactions.
+  - **Flash Wear Prevention & Bounded Buffer**: High-frequency telemetry (10–50 Hz) is queued in a bounded in-memory buffer (`DEFAULT_BATCH_FLUSH_SIZE = 20`, flush interval = 2s, buffer cap = 1,000) and written asynchronously on `Dispatchers.IO` in transactions.
   - Strict bounded capacity: auto-evicts oldest records to cap table size at **5,000 snapshots**.
+- **Failure Resilience & Zero Data Loss**:
+  - Database write errors never crash foreground monitoring or block inference.
+  - Failures update observable `persistenceError` and `persistenceFailureCount` StateFlows.
+  - Unwritten snapshots are safely re-queued up to buffer capacity and accounted for via `droppedSnapshotsCount`.
+- **Clean Service Shutdown**:
+  - `stopMonitoring()` executes a synchronous flush with a 2-second timeout before coroutine cancellation, ensuring pending in-memory snapshots are safely written to flash.
 - **UI Exposure**: `TelemetryRepository` provides live `recentTamperEvents` flow and persisted counter StateFlows to `MainActivity`.
 
 ### Node-RED Automation Adapter (`automation/node-red-flow.json`)
-- Connects to the SparkShield WebSocket endpoint (`ws://<android-ip>:19765/telemetry`).
-- Ingests all 12 telemetry fields and routes frames through automated decision sub-flows:
-  1. **Baseline Grid Monitoring**: Tracks nominal voltage and HF/LF spectral energy ratios for normal frames.
-  2. **Tamper Classification & Routing**: Splits detected attacks into EMP, OPTICAL, and SURGE channels.
+- **Canonical Endpoint**: Connects to the standard SparkShield WebSocket endpoint (`ws://localhost:8765/telemetry` or `ws://<host>:8765/telemetry`).
+- **Connection Health & Diagnostics**:
+  - `node_ws_status` and `node_ws_health_check` track real-time socket state (`ONLINE` vs `OFFLINE_OR_ERROR`).
+  - `node_ws_catch` catches frame parsing and ingestion errors and logs warnings to console without halting execution.
+- **Ingestion & Routing**:
+  1. **Baseline Grid Monitoring**: Tracks nominal voltage and HF/LF spectral energy ratios for normal frames (`tamperDetected == false`).
+  2. **Tamper Classification & Routing**: Splits detected attacks (`tamperDetected == true`) into EMP, OPTICAL, and SURGE channels.
   3. **5-Second Debounce Gate**: Rate-limits repeated attacks of the same class (1 message per 5 seconds), matching the Android `AlertGate` cooldown.
-  4. **Multi-Channel Dispatch**: Publishes alerts to MQTT (`sparkshield/alerts/{class}`), dispatches HTTP POST webhooks (`/api/v1/alerts`), and logs to the operations console.
+  4. **Multi-Channel Dispatch**:
+     - MQTT Output: Disabled by default (`"d": true`) for zero-dependency local testing. Can be enabled to publish to `sparkshield/alerts/{class}`.
+     - HTTP Webhook: Disabled by default (`"d": true`) for zero-dependency local testing. Can be enabled to dispatch POST alerts to `/api/v1/alerts`.
+     - Debug Console: Pre-wired and active for immediate inspection in Node-RED debug sidebar.
 
 ---
 
 ## Phase 6 Checklist
 
 - [x] **Room Entities & DAOs**: `TamperEventEntity`, `TelemetrySnapshotEntity`, `TamperEventDao`, `TelemetrySnapshotDao`.
-- [x] **Thread-Safe Repository**: `RoomTelemetryRepository` with bounded in-memory buffer, batch flushes, and background eviction.
+- [x] **Schema Indexes & Version 2**: Added `timestamp_ms`, `class_name`, and `tamper_detected` indexes with `MIGRATION_1_2`.
+- [x] **Thread-Safe Repository**: `RoomTelemetryRepository` with bounded in-memory buffer (1,000 items), batch flushes, and background eviction.
 - [x] **Zero Synchronous Flash Writes**: High-frequency telemetry (10–50 Hz) buffered in memory; written in transactions on `Dispatchers.IO`.
+- [x] **Failure Resilience**: Persistence errors logged, error StateFlows exposed, and unwritten records safely re-queued.
+- [x] **Clean Shutdown Flush**: Pending snapshots synchronously flushed with timeout before service destruction.
 - [x] **Capacity Boundaries**: Max 1,000 tamper events and max 5,000 snapshots enforced via SQL eviction queries.
 - [x] **UI Exposure**: Persisted counters displayed in `MainActivity`; `recentTamperEvents` flow exposed in `MonitoringViewModel`.
-- [x] **Node-RED Flow Configuration**: Complete valid flow in `automation/node-red-flow.json` covering baseline, routing, 5s debounce, MQTT, and Webhooks.
-- [x] **Phase 6 Verification Suite**: `tests/verify_phase6.py` verifies SQLite schema parity, eviction limits, batch buffering, and Node-RED JSON schema compatibility.
+- [x] **Node-RED Flow Configuration**: Canonical port `ws://localhost:8765/telemetry`, connection health tracking, 5s debounce, and safe local testing defaults.
+- [x] **Deterministic E2E Verification**: `tests/verify_phase6.py` verifies SQLite schema parity, eviction limits, batch buffering, Node-RED JSON schema, cross-layer unit consistency, and malformed frame rejection.
 
 ---
 

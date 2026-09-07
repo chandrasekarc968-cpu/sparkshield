@@ -1,5 +1,6 @@
 package com.sparkshield.android.data.repository
 
+import android.util.Log
 import com.sparkshield.android.data.dao.TamperEventDao
 import com.sparkshield.android.data.dao.TelemetrySnapshotDao
 import com.sparkshield.android.data.entity.TamperEventEntity
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -27,6 +29,10 @@ interface TelemetryRepository {
     val recentSnapshots: Flow<List<TelemetrySnapshotEntity>>
     val persistedTamperEventsCount: StateFlow<Long>
     val persistedSnapshotsCount: StateFlow<Long>
+
+    val persistenceError: StateFlow<String?>
+    val persistenceFailureCount: StateFlow<Long>
+    val droppedSnapshotsCount: StateFlow<Long>
 
     suspend fun recordTamperEvent(event: TamperEventEntity)
     fun recordTelemetrySnapshot(snapshot: TelemetrySnapshotEntity)
@@ -50,7 +56,8 @@ class RoomTelemetryRepository(
     private val batchFlushSize: Int = DEFAULT_BATCH_FLUSH_SIZE,
     private val batchFlushIntervalMs: Long = DEFAULT_BATCH_FLUSH_INTERVAL_MS,
     private val maxTamperEvents: Int = MAX_TAMPER_EVENTS_CAP,
-    private val maxSnapshots: Int = MAX_SNAPSHOTS_CAP
+    private val maxSnapshots: Int = MAX_SNAPSHOTS_CAP,
+    private val maxBufferCapacity: Int = MAX_BUFFER_CAPACITY
 ) : TelemetryRepository {
 
     companion object {
@@ -58,6 +65,8 @@ class RoomTelemetryRepository(
         const val DEFAULT_BATCH_FLUSH_INTERVAL_MS = 2000L
         const val MAX_TAMPER_EVENTS_CAP = 1000
         const val MAX_SNAPSHOTS_CAP = 5000
+        const val MAX_BUFFER_CAPACITY = 1000
+        private const val TAG = "RoomTelemetryRepository"
     }
 
     private val snapshotBuffer = mutableListOf<TelemetrySnapshotEntity>()
@@ -68,6 +77,15 @@ class RoomTelemetryRepository(
 
     private val _persistedSnapshotsCount = MutableStateFlow(0L)
     override val persistedSnapshotsCount: StateFlow<Long> = _persistedSnapshotsCount.asStateFlow()
+
+    private val _persistenceError = MutableStateFlow<String?>(null)
+    override val persistenceError: StateFlow<String?> = _persistenceError.asStateFlow()
+
+    private val _persistenceFailureCount = MutableStateFlow(0L)
+    override val persistenceFailureCount: StateFlow<Long> = _persistenceFailureCount.asStateFlow()
+
+    private val _droppedSnapshotsCount = MutableStateFlow(0L)
+    override val droppedSnapshotsCount: StateFlow<Long> = _droppedSnapshotsCount.asStateFlow()
 
     override val recentTamperEvents: Flow<List<TamperEventEntity>> = tamperDao.getRecentEvents(100)
     override val recentSnapshots: Flow<List<TelemetrySnapshotEntity>> = snapshotDao.getRecentSnapshots(100)
@@ -81,7 +99,7 @@ class RoomTelemetryRepository(
                 _persistedTamperEventsCount.value = tamperDao.count()
                 _persistedSnapshotsCount.value = snapshotDao.count()
             } catch (e: Exception) {
-                // Keep initial 0L on error
+                Log.w(TAG, "Could not fetch initial database counts: ${e.message}")
             }
         }
 
@@ -101,6 +119,7 @@ class RoomTelemetryRepository(
         withContext(ioDispatcher) {
             try {
                 tamperDao.insert(event)
+                _persistenceError.value = null
                 val currentCount = tamperDao.count()
                 if (currentCount > maxTamperEvents) {
                     tamperDao.deleteOldest(maxTamperEvents)
@@ -109,19 +128,29 @@ class RoomTelemetryRepository(
                     _persistedTamperEventsCount.value = currentCount
                 }
             } catch (e: Exception) {
-                // Storage failure logged safely without crashing monitoring service
+                Log.e(TAG, "Failed to persist tamper event seq=${event.sequenceId}: ${e.message}", e)
+                _persistenceError.value = "Tamper event write failure: ${e.message}"
+                _persistenceFailureCount.update { it + 1 }
             }
         }
     }
 
     /**
-     * Non-blocking queueing of high-frequency telemetry snapshots into in-memory buffer.
+     * Non-blocking queueing of high-frequency telemetry snapshots into bounded in-memory buffer.
      * Triggers asynchronous IO flush if buffer reaches [batchFlushSize].
      */
     override fun recordTelemetrySnapshot(snapshot: TelemetrySnapshotEntity) {
         scope.launch {
             val shouldFlush = bufferMutex.withLock {
-                snapshotBuffer.add(snapshot)
+                if (snapshotBuffer.size < maxBufferCapacity) {
+                    snapshotBuffer.add(snapshot)
+                } else {
+                    // Buffer capacity reached; drop oldest to prevent unbounded memory growth
+                    snapshotBuffer.removeAt(0)
+                    snapshotBuffer.add(snapshot)
+                    _droppedSnapshotsCount.update { it + 1 }
+                    Log.w(TAG, "Buffer capacity reached; dropped oldest snapshot")
+                }
                 snapshotBuffer.size >= batchFlushSize
             }
             if (shouldFlush) {
@@ -151,6 +180,7 @@ class RoomTelemetryRepository(
 
         try {
             snapshotDao.insertAll(toPersist)
+            _persistenceError.value = null
             val currentCount = snapshotDao.count()
             if (currentCount > maxSnapshots) {
                 snapshotDao.deleteOldest(maxSnapshots)
@@ -159,7 +189,26 @@ class RoomTelemetryRepository(
                 _persistedSnapshotsCount.value = currentCount
             }
         } catch (e: Exception) {
-            // Drop or re-queue on persistent error
+            Log.e(TAG, "Failed to flush ${toPersist.size} snapshots: ${e.message}", e)
+            _persistenceError.value = "Snapshot batch write failure: ${e.message}"
+            _persistenceFailureCount.update { it + 1 }
+
+            // Safely re-queue up to available buffer capacity without unbounded memory growth
+            bufferMutex.withLock {
+                val availableSpace = maxBufferCapacity - snapshotBuffer.size
+                if (availableSpace > 0) {
+                    val toRequeue = toPersist.take(availableSpace)
+                    val dropped = toPersist.size - toRequeue.size
+                    snapshotBuffer.addAll(0, toRequeue)
+                    if (dropped > 0) {
+                        _droppedSnapshotsCount.update { it + dropped }
+                        Log.w(TAG, "Re-queue capacity exceeded; dropped $dropped snapshots")
+                    }
+                } else {
+                    _droppedSnapshotsCount.update { it + toPersist.size }
+                    Log.w(TAG, "Buffer full during failure recovery; dropped ${toPersist.size} snapshots")
+                }
+            }
         }
     }
 
@@ -170,6 +219,9 @@ class RoomTelemetryRepository(
             snapshotDao.clearAll()
             _persistedTamperEventsCount.value = 0L
             _persistedSnapshotsCount.value = 0L
+            _persistenceError.value = null
+            _persistenceFailureCount.value = 0L
+            _droppedSnapshotsCount.value = 0L
         }
     }
 

@@ -2,13 +2,20 @@ package com.sparkshield.android.data.entity
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
  * Room entity representing an immutable historical audit record of a confirmed
  * tamper alert (EMP, OPTICAL, SURGE) meeting the >= 0.85 confidence threshold.
  */
-@Entity(tableName = "tamper_events")
+@Entity(
+    tableName = "tamper_events",
+    indices = [
+        Index(value = ["timestamp_ms"]),
+        Index(value = ["class_name"])
+    ]
+)
 data class TamperEventEntity(
     @PrimaryKey(autoGenerate = true)
     @ColumnInfo(name = "id")

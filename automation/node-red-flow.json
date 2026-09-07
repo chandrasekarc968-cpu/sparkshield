@@ -4,12 +4,12 @@
     "type": "tab",
     "label": "SparkShield Monitoring & Tamper Automation",
     "disabled": false,
-    "info": "SparkShield Cyber-Physical Smart-Meter Tamper-Detection Pipeline.\nIngests real-time 12-field telemetry frames from Android/Host WebSocket server (ws://<host>:19765/telemetry).\nProvides baseline grid monitoring, classification routing (EMP, OPTICAL, SURGE), 5-second rate limiting, and multi-channel alerting (MQTT, Webhook, Dashboard)."
+    "info": "SparkShield Cyber-Physical Smart-Meter Tamper-Detection Pipeline.\nIngests real-time 12-field telemetry frames from Android/Host WebSocket server (ws://<host>:8765/telemetry).\nProvides baseline grid monitoring, classification routing (EMP, OPTICAL, SURGE), 5-second rate limiting, connection health tracking, and multi-channel alerting (MQTT, Webhook, Dashboard)."
   },
   {
     "id": "ws_client_sparkshield",
     "type": "websocket-client",
-    "path": "ws://localhost:19765/telemetry",
+    "path": "ws://localhost:8765/telemetry",
     "tls": "",
     "wholemsg": "false",
     "subprotocol": ""
@@ -28,6 +28,74 @@
     "cleansession": true
   },
   {
+    "id": "node_ws_status",
+    "type": "status",
+    "z": "tab_sparkshield",
+    "name": "WS Connection Status",
+    "scope": ["node_ws_in"],
+    "x": 160,
+    "y": 120,
+    "wires": [["node_ws_health_check"]]
+  },
+  {
+    "id": "node_ws_health_check",
+    "type": "function",
+    "z": "tab_sparkshield",
+    "name": "Connection Health & Error Monitor",
+    "func": "const st = msg.status || {};\nconst isConnected = st.text === \"connected\";\nmsg.payload = {\n    connectionState: st.text || \"unknown\",\n    healthStatus: isConnected ? \"ONLINE\" : \"OFFLINE_OR_ERROR\",\n    connected: isConnected,\n    timestamp: new Date().toISOString(),\n    error: isConnected ? null : (\"WebSocket disconnected or server unreachable at ws://localhost:8765/telemetry (Status: \" + (st.text || \"disconnected\") + \")\")\n};\nif (!isConnected) {\n    node.warn(\"SparkShield WS connection degraded/disconnected: \" + (st.text || \"error\"));\n}\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 450,
+    "y": 120,
+    "wires": [["node_ws_health_debug"]]
+  },
+  {
+    "id": "node_ws_health_debug",
+    "type": "debug",
+    "z": "tab_sparkshield",
+    "name": "WS Health Log (Console)",
+    "active": true,
+    "tosidebar": true,
+    "console": true,
+    "tostatus": true,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "payload.healthStatus",
+    "statusType": "auto",
+    "x": 750,
+    "y": 120,
+    "wires": []
+  },
+  {
+    "id": "node_ws_catch",
+    "type": "catch",
+    "z": "tab_sparkshield",
+    "name": "Catch Ingest & Connection Errors",
+    "scope": ["node_ws_in", "node_json_parse"],
+    "uncaught": false,
+    "x": 420,
+    "y": 60,
+    "wires": [["node_error_formatter"]]
+  },
+  {
+    "id": "node_error_formatter",
+    "type": "function",
+    "z": "tab_sparkshield",
+    "name": "Format Ingest Error",
+    "func": "msg.payload = {\n    alertId: \"ERR-INGEST-\" + Date.now(),\n    error: msg.error ? msg.error.message : \"Unknown ingestion error\",\n    sourceNode: msg.error ? (msg.error.source ? msg.error.source.name : \"unknown\") : \"unknown\",\n    timestamp: new Date().toISOString(),\n    severity: \"WARNING_INGESTION_ERROR\"\n};\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 680,
+    "y": 60,
+    "wires": [["node_ws_health_debug"]]
+  },
+  {
     "id": "node_ws_in",
     "type": "websocket in",
     "z": "tab_sparkshield",
@@ -35,7 +103,7 @@
     "server": "",
     "client": "ws_client_sparkshield",
     "x": 160,
-    "y": 200,
+    "y": 220,
     "wires": [["node_json_parse"]]
   },
   {
@@ -47,7 +115,7 @@
     "action": "obj",
     "pretty": false,
     "x": 420,
-    "y": 200,
+    "y": 220,
     "wires": [["node_tamper_gate_switch"]]
   },
   {
@@ -65,7 +133,7 @@
     "repair": false,
     "outputs": 2,
     "x": 680,
-    "y": 200,
+    "y": 220,
     "wires": [
       ["node_baseline_monitor"],
       ["node_tamper_class_switch"]
@@ -83,7 +151,7 @@
     "finalize": "",
     "libs": [],
     "x": 960,
-    "y": 140,
+    "y": 160,
     "wires": [["node_baseline_debug"]]
   },
   {
@@ -100,7 +168,7 @@
     "statusVal": "payload.peakVoltageV",
     "statusType": "auto",
     "x": 1240,
-    "y": 140,
+    "y": 160,
     "wires": []
   },
   {
@@ -119,7 +187,7 @@
     "repair": false,
     "outputs": 3,
     "x": 960,
-    "y": 280,
+    "y": 300,
     "wires": [
       ["node_debounce_emp"],
       ["node_debounce_optical"],
@@ -144,7 +212,7 @@
     "allowrate": false,
     "outputs": 1,
     "x": 1240,
-    "y": 240,
+    "y": 260,
     "wires": [["node_emp_formatter"]]
   },
   {
@@ -165,7 +233,7 @@
     "allowrate": false,
     "outputs": 1,
     "x": 1250,
-    "y": 300,
+    "y": 320,
     "wires": [["node_optical_formatter"]]
   },
   {
@@ -186,7 +254,7 @@
     "allowrate": false,
     "outputs": 1,
     "x": 1240,
-    "y": 360,
+    "y": 380,
     "wires": [["node_surge_formatter"]]
   },
   {
@@ -201,7 +269,7 @@
     "finalize": "",
     "libs": [],
     "x": 1540,
-    "y": 240,
+    "y": 260,
     "wires": [["node_mqtt_out", "node_webhook_post", "node_alert_debug"]]
   },
   {
@@ -216,7 +284,7 @@
     "finalize": "",
     "libs": [],
     "x": 1550,
-    "y": 300,
+    "y": 320,
     "wires": [["node_mqtt_out", "node_webhook_post", "node_alert_debug"]]
   },
   {
@@ -231,14 +299,14 @@
     "finalize": "",
     "libs": [],
     "x": 1540,
-    "y": 360,
+    "y": 380,
     "wires": [["node_mqtt_out", "node_webhook_post", "node_alert_debug"]]
   },
   {
     "id": "node_mqtt_out",
     "type": "mqtt out",
     "z": "tab_sparkshield",
-    "name": "MQTT Alert Publisher",
+    "name": "MQTT Alert Publisher (Disabled by Default)",
     "topic": "",
     "qos": "1",
     "retain": "false",
@@ -248,15 +316,16 @@
     "correl": "",
     "expiry": "",
     "broker": "mqtt_broker_sparkshield",
-    "x": 1840,
-    "y": 240,
+    "d": true,
+    "x": 1880,
+    "y": 260,
     "wires": []
   },
   {
     "id": "node_webhook_post",
     "type": "http request",
     "z": "tab_sparkshield",
-    "name": "HTTP Webhook Dispatcher",
+    "name": "HTTP Webhook Dispatcher (Disabled by Default)",
     "method": "POST",
     "ret": "txt",
     "paytoqs": "ignore",
@@ -268,8 +337,9 @@
     "authType": "",
     "senderr": false,
     "headers": [],
-    "x": 1850,
-    "y": 300,
+    "d": true,
+    "x": 1900,
+    "y": 320,
     "wires": [[]]
   },
   {
@@ -286,7 +356,7 @@
     "statusVal": "payload.severity",
     "statusType": "auto",
     "x": 1860,
-    "y": 360,
+    "y": 380,
     "wires": []
   }
 ]

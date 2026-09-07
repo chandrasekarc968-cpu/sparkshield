@@ -41,6 +41,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Android Foreground Service (connectedDevice) executing real-time smart-meter
@@ -516,8 +518,14 @@ class SparkShieldMonitoringService(
         }
 
         telemetryRepository?.let { repo ->
-            serviceScope.launch {
-                repo.flushPendingSnapshots()
+            try {
+                runBlocking(Dispatchers.IO) {
+                    withTimeoutOrNull(2000L) {
+                        repo.flushPendingSnapshots()
+                    }
+                }
+            } catch (e: Exception) {
+                // Ignore timeout or interrupt during service shutdown
             }
         }
 

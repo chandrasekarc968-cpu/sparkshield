@@ -46,3 +46,10 @@ Thumbs.db
 *.iml
 .vscode/
 
+# SQLite & Local Databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+

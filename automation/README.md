@@ -11,7 +11,7 @@ The **SparkShield Node-RED Flow** integrates the on-device and edge inference te
 ## 1. Flow Overview
 
 ```
-[WebSocket In (ws://<host>:19765/telemetry)]
+[WebSocket In (ws://<host>:8765/telemetry)] ───► [WS Connection Status & Health Monitor]
                 │
                 ▼
   [JSON Parse (12 Telemetry Fields)]
@@ -29,9 +29,9 @@ The **SparkShield Node-RED Flow** integrates the on-device and edge inference te
                                                                   │
                                                                   ▼
                                                    [Multi-Channel Alert Dispatcher]
-                                                     ├── MQTT Topic: sparkshield/alerts/{class}
-                                                     ├── HTTP Webhook: POST /api/v1/alerts
-                                                     └── Debug Console Output
+                                                     ├── MQTT: sparkshield/alerts/{class} (optional)
+                                                     ├── Webhook: POST /api/v1/alerts (optional)
+                                                     └── Debug Console Output (active)
 ```
 
 ---
@@ -59,27 +59,32 @@ The flow ingests the standard SparkShield WebSocket JSON payload emitted by the 
 
 ## 3. Sub-Flows & Logic
 
-### A. Grid Baseline Monitoring
+### A. Connection Health & Error Tracking
+- `node_ws_status`: Scoped to `node_ws_in` to monitor connection transitions (`connected`, `disconnected`, `error`).
+- `node_ws_health_check`: Emits `{ connectionState, healthStatus: "ONLINE" | "OFFLINE_OR_ERROR", connected, error }`.
+- `node_ws_catch`: Catches ingestion errors and reports warning payloads to debug console without interrupting execution.
+
+### B. Grid Baseline Monitoring
 For `tamperDetected == false` frames:
 - Computes high-frequency to low-frequency energy ratio:
   $$\text{HF Ratio} = \frac{\sum_{i=4}^7 \text{bin}_i}{\sum_{i=0}^7 \text{bin}_i + 10^{-5}}$$
 - Monitors nominal 50/60 Hz voltage stability.
 - Routes baseline diagnostics to console or dashboard gauges.
 
-### B. Classification Routing & Severity Escalation
+### C. Classification Routing & Severity Escalation
 For `tamperDetected == true` frames:
 - **EMP**: Escalated as **Critical Level 1** (ultrafast transient, broadband electromagnetic injection).
 - **OPTICAL**: Escalated as **Critical Level 2** (photodiode rail saturation, physical enclosure breach/laser).
 - **SURGE**: Escalated as **Warning Level 3** (inductive switching transients, potential power anomaly).
 
-### C. 5-Second Debounce Gate
-- Each tamper class passes through a rate-limiting delay node configured for **1 message per 5 seconds** (`drop: true`).
+### D. 5-Second Debounce Gate
+- Each tamper class passes through an independent rate-limiting delay node configured for **1 message per 5 seconds** (`drop: true`).
 - Matches the Android `AlertGate` 5000 ms cooldown to prevent alert storms and flapping during continuous tamper bursts.
 
-### D. Dispatch Outputs
-- **MQTT Output**: Publishes JSON alerts to broker (default `localhost:1883`) on topic `sparkshield/alerts/{tamperType}` with QoS 1.
-- **HTTP Webhook**: Dispatches POST request with structured alert JSON to `http://localhost:8080/api/v1/alerts`.
-- **Debug Logger**: Prints formatted alerts to Node-RED sidebar and server console.
+### E. Dispatch Outputs
+- **MQTT Output**: Publishes JSON alerts to broker (default `localhost:1883`) on topic `sparkshield/alerts/{tamperType}` with QoS 1. *Disabled by default* (`"d": true`) for clean local testing.
+- **HTTP Webhook**: Dispatches POST request with structured alert JSON to `http://localhost:8080/api/v1/alerts`. *Disabled by default* (`"d": true`) for clean local testing.
+- **Debug Logger**: Prints formatted alerts to Node-RED sidebar and server console (active).
 
 ---
 
@@ -93,7 +98,19 @@ For `tamperDetected == true` frames:
 3. Click the top-right hamburger menu $\to$ **Import**.
 4. Select or paste the contents of [`automation/node-red-flow.json`](file:///c:/Users/Chand/Documents/New%20folder/sparkshield/sparkshield/automation/node-red-flow.json).
 5. Ensure the WebSocket client node points to your active SparkShield telemetry source:
-   - For Android device over Wi-Fi: `ws://<android-ip>:19765/telemetry`
-   - For ADB reverse port forwarding: `ws://localhost:19765/telemetry`
-   - For local Python publisher: `ws://localhost:8765/telemetry` (or configured port)
-6. Click **Deploy**.
+   - For local Python publisher: `ws://localhost:8765/telemetry` (default canonical endpoint)
+   - For Android emulator: `ws://10.0.2.2:8765/telemetry`
+   - For Android hardware via ADB: Run `adb reverse tcp:8765 tcp:8765` then use `ws://localhost:8765/telemetry`
+   - For Android device over Wi-Fi: `ws://<android-ip>:8765/telemetry`
+6. *(Optional)* To enable MQTT or HTTP Webhook dispatch:
+   - Double-click the `MQTT Alert Publisher` node, click **Enable** (top-left of node dialog), configure broker, and deploy.
+   - Double-click the `HTTP Webhook Dispatcher` node, click **Enable**, configure your REST endpoint, and deploy.
+7. Click **Deploy**.
+
+---
+
+## 5. Troubleshooting & Health Diagnostics
+
+- **Connection Error / Red Status**: If Node-RED displays a red square on `SparkShield WS Receiver`, verify the publisher is running with `curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Host: localhost:8765" -H "Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==" -H "Sec-WebSocket-Version: 13" http://localhost:8765/telemetry` or check `WS Health Log` in the debug sidebar.
+- **Port Conflict**: If running multiple instances or changing port, edit `ws_client_sparkshield` in Node-RED Configuration Nodes to match your custom port.
+

@@ -86,14 +86,21 @@ class WebSocketPublisher(
      * Non-blocking guarantee:
      * Drops oldest message if channel is full; caller returns immediately.
      */
-    fun publish(message: TelemetryWsMessage) {
-        if (!isRunning.get()) return
+    fun publish(message: TelemetryWsMessage): Boolean {
+        if (!isRunning.get()) return false
 
         val result = messageChannel.trySend(message)
         if (result.isFailure) {
             Log.w(tag, "Outbound telemetry frame dropped due to buffer saturation")
+            return false
         }
+        return true
     }
+
+    /**
+     * Alias for [publish] for backward compatibility with service callers.
+     */
+    fun enqueueMessage(message: TelemetryWsMessage): Boolean = publish(message)
 
     /**
      * Cleanly shuts down the publisher, terminates background coroutines,
