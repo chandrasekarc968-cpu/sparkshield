@@ -129,12 +129,116 @@ python -m python_core.mock_stream --rate 10 --tcp --port 9002
 
 ---
 
+---
+
+## Phase 4: WebSocket Telemetry Streaming & Real-Time Dashboard
+
+Phase 4 introduces live multi-client WebSocket publishing from the Android edge service (and standalone local Python mock publisher) directly to the desktop real-time dark monitoring dashboard.
+
+### WebSocket Endpoint & Port Allocation
+- **Default Endpoint**: `ws://localhost:8765`
+- **Default Dashboard Port**: `http://localhost:3000`
+- **Configurable**: Change host/port via `--port <port>` in Python or the dashboard header input field.
+
+### Message Schema (JSON)
+Every telemetry frame emitted over WebSocket includes the following 12 fields:
+
+```json
+{
+  "seqId": 1420,
+  "timestampMs": 1725700000000,
+  "eventFlags": 1,
+  "peakMv": 12500,
+  "riseTimeNs": 20,
+  "decayTimeUs": 50,
+  "opticalMv": 250,
+  "fftBins": [10, 15, 20, 25, 30, 20, 10, 5],
+  "classification": "EMP",
+  "confidence": 0.9650,
+  "inferenceTimeUs": 420,
+  "tamperDetected": true
+}
+```
+
+| Field Name | Type | Unit / Semantics | Description |
+| :--- | :--- | :--- | :--- |
+| `seqId` | `number` | Counter | Monotonically increasing sequence ID counter |
+| `timestampMs` | `number` | Milliseconds | Epoch timestamp |
+| `eventFlags` | `number` | Bitmask | Bit 0=EMP, 1=OPTICAL, 2=SURGE, 3=NORMAL |
+| `peakMv` | `number` | Millivolts | Peak sensor voltage (0–65,535 mV) |
+| `riseTimeNs` | `number` | Nanoseconds | Transient rise time ($10\text{ ns/LSB}$) |
+| `decayTimeUs` | `number` | Microseconds | Transient decay duration ($1\ \mu\text{s/LSB}$) |
+| `opticalMv` | `number` | Millivolts | Photodiode sensor reading (0–5,000 mV) |
+| `fftBins` | `number[8]` | Normalized power | 8-bin frequency energy envelope |
+| `classification`| `string` | Label | Model decision: `"NORMAL"`, `"EMP"`, `"OPTICAL"`, or `"SURGE"` |
+| `confidence` | `number` | $[0.0, 1.0]$ | Softmax probability score of winning class |
+| `inferenceTimeUs`| `number` | Microseconds | Execution duration measured on CPU via `System.nanoTime()` |
+| `tamperDetected`| `boolean` | Flag | `true` only when `confidence >= 0.85` and class is not `NORMAL` |
+
+---
+
+## Quickstart: Phase 4 Local Development Mode (No Hardware Required)
+
+You can launch and demonstrate the entire telemetry ingestion and real-time visualization pipeline on your local machine without Android hardware, ADB, or physical meters.
+
+### Step 1: Start Mock WebSocket Publisher
+```powershell
+# From repository root
+python -m python_core.mock_ws_server --port 8765
+```
+Or via Makefile:
+```bash
+make mock-ws
+```
+
+### Step 2: Launch the Real-Time Dashboard
+In a separate terminal:
+```powershell
+cd dashboard
+npm install
+npm run dev
+```
+Open your browser to: **`http://localhost:3000`**
+
+### Dashboard Build & Test Commands
+```powershell
+cd dashboard
+npm test              # Run automated unit tests (RingBuffer, WebSocketClient, State)
+npm run build         # Produce optimized production bundle in dashboard/dist/
+npm run preview       # Preview production build on http://localhost:3000
+```
+
+---
+
+## Phase 4 Demo Checklist
+
+- [x] **Connection Status**: Green dot indicates live WebSocket connection; automatically reconnects with backoff if publisher restarts.
+- [x] **Classification Visuals**: Emerald green card for `NORMAL`; glowing, high-priority pulsing red card and banner for `EMP` and `OPTICAL`; amber card for `SURGE`.
+- [x] **Confidence Gating**: Confidence meter dynamically reflects softmax probabilities; alerts trigger strictly at $\ge 0.85$.
+- [x] **Dual Waveform Canvas**: Real-time scrolling peak voltage (cyan) and optical sensor rail (amber) rendered smoothly via `requestAnimationFrame`.
+- [x] **FFT Spectrum Canvas**: 8-bin frequency bar chart highlighting high-frequency spectral spikes.
+- [x] **Latency Profiler**: Displays edge inference execution duration in microseconds ($\mu\text{s}$).
+- [x] **Bounded History & Event Log**: Recent tamper attacks logged chronologically up to 50 events without memory leaks.
+- [x] **Stream Watchdog**: Stale stream indicator triggers if frames stop for >3 seconds.
+
+---
+
+## Known Limitations
+
+1. **Simulation Boundary**: Telemetry, transient pulses, optical saturations, and inductive surges are generated mathematically by software models. The system does not interface with physical electrical meters, high-voltage equipment, or laser injection hardware.
+2. **Deferred BLE (Phase 5)**: Physical Bluetooth Low Energy peripheral ingestion is abstracted behind `TelemetryProvider`.
+3. **Deferred Persistence (Phase 6)**: Continuous high-frequency telemetry writes are kept in memory ring buffers to preserve flash longevity; persistent SQLite/Room event logging is deferred to Phase 6.
+4. **Deferred Qualcomm QNN (Phase 7)**: Inference is performed on CPU via ONNX Runtime Android (`ai.onnxruntime:onnxruntime-android:1.19.0`). Qualcomm Hexagon NPU hardware acceleration is planned for Phase 7.
+
+---
+
 ## Development Roadmap
 
 - [x] **Phase 1**: Virtual Meter Core, 29-byte protocol, deterministic signal models, mock stream, and automated tests.
-- [ ] **Phase 2**: 1D CNN model training, static ONNX export, and INT8 quantization.
-- [ ] **Phase 3**: Android foreground service (`connectedDevice`), CPU inference, high-confidence alert gating ($\ge 0.85$).
-- [ ] **Phase 4**: WebSocket publisher and real-time dark monitoring dashboard.
+- [x] **Phase 2**: 1D CNN model training, static ONNX export, numerical parity verification, and INT8 quantization.
+- [x] **Phase 3**: Android foreground service (`connectedDevice`), CPU ONNX inference, high-confidence alert gating ($\ge 0.85$).
+- [x] **Phase 4**: Asynchronous WebSocket publisher, local mock streamer, and real-time dark monitoring dashboard.
 - [ ] **Phase 5**: BLE transport integration over GATT peripheral.
 - [ ] **Phase 6**: Room persistence and Node-RED automation adapter.
 - [ ] **Phase 7**: Qualcomm QNN/QAIRT Hexagon HTP NPU hardware acceleration.
+

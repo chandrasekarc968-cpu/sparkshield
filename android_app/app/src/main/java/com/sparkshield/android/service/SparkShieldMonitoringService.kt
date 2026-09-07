@@ -19,6 +19,8 @@ import com.sparkshield.android.transport.MockTelemetryProvider
 import com.sparkshield.android.transport.TelemetryProvider
 import com.sparkshield.android.ui.MonitoringState
 import com.sparkshield.android.ui.TamperEvent
+import com.sparkshield.android.websocket.TelemetryWsMessage
+import com.sparkshield.android.websocket.WebSocketPublisher
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +55,7 @@ class SparkShieldMonitoringService(
     private lateinit var featureExtractor: FeatureExtractor
     private lateinit var sequenceTracker: SequenceTracker
     private lateinit var alertGate: AlertGate
+    private lateinit var webSocketPublisher: WebSocketPublisher
 
     // Dedicated metrics counters
     private var receivedFramesCount: Long = 0L
@@ -69,6 +72,8 @@ class SparkShieldMonitoringService(
         featureExtractor = FeatureExtractor()
         sequenceTracker = SequenceTracker()
         alertGate = AlertGate(confidenceThreshold = 0.85f, cooldownMs = 5000L)
+        webSocketPublisher = WebSocketPublisher(port = 8765)
+        webSocketPublisher.start()
 
         // Decoupled architecture: Mock provider for simulation
         telemetryProvider = MockTelemetryProvider(intervalMs = 100L)
@@ -237,6 +242,24 @@ class SparkShieldMonitoringService(
                                     tamperAlertLog = updatedLog
                                 )
                             }
+
+                            // 5. Asynchronously broadcast frame to WebSocket dashboard clients
+                            val isTamper = inferenceResult.classIndex != ClassLabels.NORMAL.id && inferenceResult.confidence >= 0.85f
+                            val wsMessage = TelemetryWsMessage(
+                                seqId = frame.sequenceId,
+                                timestampMs = frame.timestampMs,
+                                eventFlags = frame.eventFlags,
+                                peakMv = frame.peakMv,
+                                riseTimeNs = frame.riseTimeNs.toLong(),
+                                decayTimeUs = frame.decayTimeUs,
+                                opticalMv = frame.opticalSensorMv,
+                                fftBins = frame.fftEnergyBins.map { it.toInt() and 0xFF },
+                                classification = inferenceResult.label,
+                                confidence = inferenceResult.confidence,
+                                inferenceTimeUs = inferenceResult.inferenceTimeUs,
+                                tamperDetected = isTamper
+                            )
+                            webSocketPublisher.publish(wsMessage)
                         }
                         is ProtocolResult.Failure -> {
                             invalidFramesCount++
@@ -257,6 +280,8 @@ class SparkShieldMonitoringService(
         processingJob?.cancel()
         processingJob = null
 
+        webSocketPublisher.stop()
+
         serviceScope.launch {
             telemetryProvider.stop()
         }
@@ -275,6 +300,7 @@ class SparkShieldMonitoringService(
 
     override fun onDestroy() {
         stopMonitoring()
+        webSocketPublisher.stop()
         inferenceEngine.close()
         serviceScope.cancel()
 

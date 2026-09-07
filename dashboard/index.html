@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SparkShield | Real-Time Edge Monitoring Dashboard</title>
+  <meta name="description" content="SparkShield real-time dark cyber-physical monitoring dashboard for smart-meter edge AI tamper detection." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/styles/main.css" />
+</head>
+<body>
+
+  <!-- Top Alert Banner for High-Priority Tamper Invasions -->
+  <div id="alert-banner" class="alert-banner" role="alert" aria-live="assertive">
+    CRITICAL: High-voltage EMP transient simulated
+  </div>
+
+  <!-- App Header -->
+  <header class="app-header">
+    <div class="brand-section">
+      <div class="brand-icon" aria-hidden="true">⚡</div>
+      <div>
+        <h1 class="brand-title">SparkShield Edge Monitoring</h1>
+      </div>
+      <span class="simulation-pill">Simulation Only</span>
+    </div>
+
+    <div class="header-controls">
+      <div class="ws-input-group">
+        <input type="text" id="ws-url-input" class="ws-input" value="ws://localhost:8765" placeholder="ws://host:port" aria-label="WebSocket Endpoint URL" />
+        <button id="btn-toggle-connect" class="btn btn-primary" type="button">Disconnect</button>
+      </div>
+
+      <div class="status-indicator" id="connection-status-container">
+        <span class="status-dot disconnected" id="status-dot" aria-hidden="true"></span>
+        <span id="status-text">Disconnected</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Dashboard Container -->
+  <main class="dashboard-container">
+
+    <!-- Top Key Metrics Cards -->
+    <section class="metrics-grid" aria-label="Real-time Metrics">
+
+      <!-- Current Classification -->
+      <div class="card status-normal" id="card-classification">
+        <div class="card-label">Classification</div>
+        <div class="card-value" id="val-classification">NORMAL</div>
+        <div class="card-subtext">
+          <span class="badge badge-normal" id="badge-classification">NORMAL</span>
+        </div>
+      </div>
+
+      <!-- Model Confidence -->
+      <div class="card" id="card-confidence">
+        <div class="card-label">Confidence</div>
+        <div class="card-value" id="val-confidence">100.0%</div>
+        <div class="confidence-meter">
+          <div class="confidence-fill" id="bar-confidence" style="width: 100%;"></div>
+        </div>
+      </div>
+
+      <!-- Peak Voltage -->
+      <div class="card" id="card-peak-voltage">
+        <div class="card-label">Peak Voltage</div>
+        <div class="card-value" id="val-peak-voltage">0 mV</div>
+        <div class="card-subtext" id="val-peak-voltage-sub">(0.00 V)</div>
+      </div>
+
+      <!-- Inference Latency -->
+      <div class="card" id="card-latency">
+        <div class="card-label">Inference Latency</div>
+        <div class="card-value" id="val-latency">0 µs</div>
+        <div class="card-subtext">ONNX Runtime (CPU)</div>
+      </div>
+
+      <!-- Tamper Status -->
+      <div class="card" id="card-tamper-state">
+        <div class="card-label">Tamper State</div>
+        <div class="card-value" style="font-size: 18px;">
+          <span class="badge badge-safe" id="badge-tamper">SYSTEM NORMAL</span>
+        </div>
+        <div class="card-subtext" id="val-optical-sensor">Opt Sensor: 0 mV</div>
+      </div>
+
+      <!-- Telemetry Sequence -->
+      <div class="card" id="card-sequence">
+        <div class="card-label">Sequence ID</div>
+        <div class="card-value" id="val-sequence">#0</div>
+        <div class="card-subtext" id="val-transient-timing">Rise: 0ns | Decay: 0µs</div>
+      </div>
+
+    </section>
+
+    <!-- Waveforms & Frequency Visualizers -->
+    <section class="visualizer-grid" aria-label="Waveform Visualizers">
+
+      <!-- Primary Scrolling Waveform Canvas -->
+      <div class="card chart-card">
+        <div class="chart-header">
+          <div class="chart-title">Real-Time Voltage Transients (20kV Full Scale)</div>
+          <div class="chart-legend">
+            <div class="legend-item">
+              <span class="legend-color" style="background: #06B6D4;"></span>
+              <span>Peak Voltage (mV)</span>
+            </div>
+            <div class="legend-item">
+              <span class="legend-color" style="background: #F59E0B;"></span>
+              <span>Optical Rail (mV)</span>
+            </div>
+          </div>
+        </div>
+        <div class="canvas-wrapper">
+          <canvas id="waveform-canvas"></canvas>
+        </div>
+      </div>
+
+      <!-- 8-Bin FFT Energy Spectrum Canvas -->
+      <div class="card chart-card">
+        <div class="chart-header">
+          <div class="chart-title">8-Bin FFT Spectral Distribution</div>
+        </div>
+        <div class="canvas-wrapper">
+          <canvas id="fft-canvas"></canvas>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Bottom Grid: Event History & Simulation Diagnostics -->
+    <section class="bottom-grid" aria-label="Event History and Controls">
+
+      <!-- Recent Tamper Events Log -->
+      <div class="card">
+        <div class="chart-header">
+          <div class="chart-title">Recent Tamper Event History</div>
+          <span class="card-subtext" id="val-alerts-count">0 alerts</span>
+        </div>
+        <div class="event-list" id="event-history-list">
+          <div class="empty-state">No tamper events detected yet.</div>
+        </div>
+      </div>
+
+      <!-- Telemetry Health & Simulation Details -->
+      <div class="card">
+        <div class="chart-header">
+          <div class="chart-title">Simulation Stream Health & Controls</div>
+        </div>
+        <p style="font-size: 12px; color: var(--color-text-muted); margin-bottom: 12px;">
+          Telemetry is streamed via RFC 6455 WebSockets from the Android Edge Monitoring Service or the local Python mock publisher at 10 Hz.
+        </p>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px; font-family: var(--font-mono); margin-bottom: 16px;">
+          <div>Frames: <strong id="val-valid-frames" style="color: #fff;">0</strong></div>
+          <div>Dropped: <strong id="val-dropped-frames" style="color: #F59E0B;">0</strong></div>
+          <div>Stream Rate: <strong id="val-fps" style="color: #06B6D4;">0 FPS</strong></div>
+          <div>Wire Protocol: <strong style="color: #10B981;">29-Byte CRC16</strong></div>
+        </div>
+
+        <div class="sim-controls">
+          <button type="button" class="btn btn-normal" id="btn-demo-mode">Demo Sequence Active</button>
+          <button type="button" class="btn btn-tamper" id="btn-inject-emp">Simulate EMP Burst</button>
+          <button type="button" class="btn btn-tamper" id="btn-inject-optical">Simulate Optical Burst</button>
+          <button type="button" class="btn btn-tamper" id="btn-inject-surge">Simulate Surge Burst</button>
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- App Footer -->
+  <footer class="app-footer">
+    <div>SparkShield Edge AI &bull; Cyber-Physical Meter Tamper Detection (Phase 4)</div>
+    <div class="footer-stats">
+      <span>CPU ONNX Runtime</span>
+      <span>&bull;</span>
+      <span>Threshold &ge; 0.85</span>
+      <span>&bull;</span>
+      <span>120-Point Bounded Buffer</span>
+    </div>
+  </footer>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

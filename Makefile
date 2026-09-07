@@ -1,17 +1,24 @@
-.PHONY: help train-model evaluate-model export-onnx generate-calibration quantize-model test-models test-all run-mock run-mock-tcp android-build android-test android-lint android-install-debug clean
+.PHONY: help train-model evaluate-model export-onnx generate-calibration quantize-model test-models test-all run-mock run-mock-tcp mock-ws android-build android-test android-lint android-install-debug dashboard-install dashboard-dev dashboard-build dashboard-test test-phase4 clean
 
 PYTHON ?= python
 GRADLE ?= $(if $(filter Windows_NT,$(OS)),gradlew.bat,./gradlew)
+NPM ?= npm
 
 help:
-	@echo "SparkShield ML Pipeline, Android & Protocol Build Targets:"
+	@echo "SparkShield ML Pipeline, Android, Protocol & Dashboard Build Targets:"
 	@echo "  make train-model          - Train SparkShield 1D CNN with validation/test metrics"
 	@echo "  make evaluate-model       - Evaluate checkpoint on held-out test data"
 	@echo "  make export-onnx          - Export trained model to static ONNX & verify numerical parity"
 	@echo "  make generate-calibration - Generate 200 balanced calibration tensors & manifest"
 	@echo "  make quantize-model       - Static INT8 quantization with ONNX Runtime & compare on test set"
 	@echo "  make test-models          - Run ML pipeline, ONNX, and quantization unit tests"
-	@echo "  make test-all             - Run complete test suite (Phase 1, Phase 2, and parity)"
+	@echo "  make test-all             - Run complete test suite (Phases 1-4, parity, and dashboard)"
+	@echo "  make mock-ws              - Run mock WebSocket server on port 8765"
+	@echo "  make dashboard-install    - Install dashboard npm dependencies"
+	@echo "  make dashboard-dev        - Start dashboard Vite dev server on port 3000"
+	@echo "  make dashboard-build      - Build optimized dashboard production bundle in dashboard/dist"
+	@echo "  make dashboard-test       - Run dashboard unit tests (node:test runner)"
+	@echo "  make test-phase4          - Run Phase 4 WebSocket and stream verification"
 	@echo "  make android-build        - Assemble Android debug APK via Gradle"
 	@echo "  make android-test         - Run Android JVM unit tests via Gradle"
 	@echo "  make android-lint         - Run Android code quality lint checks via Gradle"
@@ -42,6 +49,26 @@ test-models:
 test-all:
 	$(PYTHON) -m pytest python_core/tests models/tests -v
 	$(PYTHON) tests/verify_android_parity.py
+	$(PYTHON) tests/verify_phase4.py
+	cd dashboard && $(NPM) test
+
+mock-ws:
+	$(PYTHON) -m python_core.mock_ws_server --port 8765
+
+dashboard-install:
+	cd dashboard && $(NPM) install
+
+dashboard-dev:
+	cd dashboard && $(NPM) run dev
+
+dashboard-build:
+	cd dashboard && $(NPM) run build
+
+dashboard-test:
+	cd dashboard && $(NPM) test
+
+test-phase4:
+	$(PYTHON) tests/verify_phase4.py
 
 android-build:
 	cd android_app && $(GRADLE) assembleDebug
