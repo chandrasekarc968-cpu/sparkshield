@@ -1,0 +1,31 @@
+version: "3.8"
+
+services:
+  virtual-meter:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM python:3.11-slim
+        WORKDIR /app
+        COPY python_core/ /app/python_core/
+        RUN pip install --no-cache-dir numpy scipy
+        EXPOSE 9002
+        CMD ["python", "-m", "python_core.mock_stream", "--rate", "10", "--tcp", "--port", "9002"]
+    ports:
+      - "9002:9002"
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile_inline: |
+        FROM node:18-alpine
+        WORKDIR /app
+        EXPOSE 3000
+        CMD ["echo", "SparkShield Dashboard service container ready"]
+    ports:
+      - "3000:3000"
+    depends_on:
+      - virtual-meter
