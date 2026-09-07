@@ -135,8 +135,8 @@ class MainActivity : AppCompatActivity() {
             tvModelStatus.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
         }
 
-        // Frame Counters
-        tvFrameCounters.text = "Valid: ${state.validFrames} | Invalid: ${state.invalidFrames} | Dropped: ${state.droppedFrames} | Alerts: ${state.tamperAlerts}"
+        // Frame & Persistence Counters
+        tvFrameCounters.text = "Valid: ${state.validFrames} | Dropped: ${state.droppedFrames} | Alerts: ${state.tamperAlerts} | DB Persisted: ${state.persistedTamperEvents} alerts, ${state.persistedSnapshots} snapshots"
 
         // Latest Protocol Error
         tvLatestProtocolError.text = "Latest Protocol Error: ${state.latestProtocolError ?: "None"}"

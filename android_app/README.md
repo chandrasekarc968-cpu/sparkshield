@@ -248,7 +248,24 @@ Configurable at runtime via Intent extra `SparkShieldMonitoringService.EXTRA_PRO
 
 ---
 
-## 9. Deferred Phases & Rationale
+## 9. On-Device Room Database Persistence (Phase 6)
 
-- **Phase 6 (Room Database Persistence)**: Deferred to prevent flash storage write wear during continuous high-frequency telemetry streaming.
+`SparkShieldDatabase` (`sparkshield_edge.db`) provides local SQLite audit logging for alerts and telemetry snapshots:
+- **`TamperEventEntity` (`tamper_events`)**:
+  - Automatically records confirmed tamper alerts (`EMP`, `OPTICAL`, `SURGE`) with confidence $\ge 0.85$.
+  - Stores `timestamp_ms`, `sequence_id`, `class_name`, `confidence`, `peak_mv`, `rise_time_ns`, `decay_time_us`, `optical_mv`, and `message`.
+  - Cap: 1,000 events (oldest evicted automatically).
+- **`TelemetrySnapshotEntity` (`telemetry_snapshots`)**:
+  - Records periodic 12-field telemetry frames for baseline auditing and forensics.
+  - Cap: 5,000 snapshots (oldest evicted automatically).
+
+### Backpressure & Flash Wear Protection
+- **Zero Synchronous Flash Writes**: High-frequency frames (10–50 Hz) are never written directly to SQLite synchronously.
+- **In-Memory Batch Buffer**: Telemetry frames are queued in memory (`DEFAULT_BATCH_FLUSH_SIZE = 20`, flush interval = 2s) and written asynchronously on `Dispatchers.IO` in batch transactions.
+- **Immediate Alert Dispatch**: Tamper events are dispatched asynchronously on `Dispatchers.IO` immediately without blocking the frame processing pipeline.
+
+---
+
+## 10. Deferred Phases & Rationale
+
 - **Phase 7 (Qualcomm QNN / Hexagon HTP Acceleration)**: Deferred until CPU ONNX baseline is established; isolated behind `InferenceEngine`.

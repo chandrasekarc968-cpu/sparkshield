@@ -286,28 +286,57 @@ python tests/verify_phase4.py
 # 4. Run Phase 5 virtual-bus BLE GATT end-to-end verifier
 python tests/verify_phase5_ble.py
 
-# 5. Run Dashboard test and build
+# 5. Run Phase 6 Room persistence & Node-RED verifier
+python tests/verify_phase6.py
+
+# 6. Run Dashboard test and build
 cd dashboard && npm test && npm run build
 ```
 
 ---
 
-## Phase 5 Hardening Checklist
+## Phase 6: On-Device Room Persistence & Node-RED Automation Adapter
 
-- [x] **Separated BLE Modes**: `python_core/bumble_service.py` features explicit `--mode virtual` and `--mode hardware` with `--transport <spec>`.
-- [x] **Fail-Fast Adapter Detection**: Hardware mode exits cleanly with informative instructions if no physical adapter is detected.
-- [x] **Atomic Provider Switching**: Android service safely cancels active collectors before replacing providers, preventing leaks and duplicate jobs.
-- [x] **Autonomous Fallback Ingestion**: In `AUTO` mode, pipeline seamlessly continues ingesting frames via `MockTelemetryProvider` after BLE failure.
-- [x] **Streaming State Gating**: `isConnected` is asserted strictly when BLE achieves `Streaming` state (CCCD subscription confirmed).
-- [x] **32-Bit Rollover & Validation**: Verified sequence rollover at uint32 boundary (`0xFFFFFFFF` $\to$ `0`) and strict event flag rejection across Python and Kotlin.
-- [x] **Repository Hygiene**: Staged and untracked build artifacts (`.gradle`, `node_modules`) removed; `.gitignore` hardened for Android model assets.
-- [x] **Honest Validation Labeling**: Virtual tests clearly demarcated from physical hardware test procedures.
+Phase 6 implements local SQLite audit logging via Android Jetpack Room and provides an industrial automation integration bridge via Node-RED.
+
+### On-Device Room Database Persistence
+- **Database**: `SparkShieldDatabase` (`sparkshield_edge.db`)
+- **TamperEventEntity (`tamper_events`)**:
+  - Automatically records confirmed tamper alerts (`EMP`, `OPTICAL`, `SURGE`) with confidence $\ge 0.85$.
+  - Captures timestamp, sequence ID, classification, confidence, peak voltage, rise time, decay time, and optical sensor readings.
+  - Strict bounded capacity: auto-evicts oldest records to cap table size at **1,000 events**.
+- **TelemetrySnapshotEntity (`telemetry_snapshots`)**:
+  - Periodically audits 12-field telemetry frames for forensic analysis.
+  - **Flash Wear Prevention**: High-frequency telemetry (10–50 Hz) is queued in memory (`DEFAULT_BATCH_FLUSH_SIZE = 20`, flush interval = 2s) and written asynchronously on `Dispatchers.IO` in transactions.
+  - Strict bounded capacity: auto-evicts oldest records to cap table size at **5,000 snapshots**.
+- **UI Exposure**: `TelemetryRepository` provides live `recentTamperEvents` flow and persisted counter StateFlows to `MainActivity`.
+
+### Node-RED Automation Adapter (`automation/node-red-flow.json`)
+- Connects to the SparkShield WebSocket endpoint (`ws://<android-ip>:19765/telemetry`).
+- Ingests all 12 telemetry fields and routes frames through automated decision sub-flows:
+  1. **Baseline Grid Monitoring**: Tracks nominal voltage and HF/LF spectral energy ratios for normal frames.
+  2. **Tamper Classification & Routing**: Splits detected attacks into EMP, OPTICAL, and SURGE channels.
+  3. **5-Second Debounce Gate**: Rate-limits repeated attacks of the same class (1 message per 5 seconds), matching the Android `AlertGate` cooldown.
+  4. **Multi-Channel Dispatch**: Publishes alerts to MQTT (`sparkshield/alerts/{class}`), dispatches HTTP POST webhooks (`/api/v1/alerts`), and logs to the operations console.
+
+---
+
+## Phase 6 Checklist
+
+- [x] **Room Entities & DAOs**: `TamperEventEntity`, `TelemetrySnapshotEntity`, `TamperEventDao`, `TelemetrySnapshotDao`.
+- [x] **Thread-Safe Repository**: `RoomTelemetryRepository` with bounded in-memory buffer, batch flushes, and background eviction.
+- [x] **Zero Synchronous Flash Writes**: High-frequency telemetry (10–50 Hz) buffered in memory; written in transactions on `Dispatchers.IO`.
+- [x] **Capacity Boundaries**: Max 1,000 tamper events and max 5,000 snapshots enforced via SQL eviction queries.
+- [x] **UI Exposure**: Persisted counters displayed in `MainActivity`; `recentTamperEvents` flow exposed in `MonitoringViewModel`.
+- [x] **Node-RED Flow Configuration**: Complete valid flow in `automation/node-red-flow.json` covering baseline, routing, 5s debounce, MQTT, and Webhooks.
+- [x] **Phase 6 Verification Suite**: `tests/verify_phase6.py` verifies SQLite schema parity, eviction limits, batch buffering, and Node-RED JSON schema compatibility.
+
+---
 
 ## Known Limitations
 
 1. **Simulation Boundary**: All telemetry, transient waveforms, optical saturations, and inductive surges are generated mathematically by software models. The system does not interface with physical electrical meters, high-voltage equipment, or laser injection hardware.
-2. **Deferred Persistence (Phase 6)**: High-rate telemetry frames are processed in-memory to preserve flash endurance; persistent SQLite/Room event logging is deferred to Phase 6.
-3. **Deferred Qualcomm QNN (Phase 7)**: Edge inference runs on CPU via ONNX Runtime Android (`ai.onnxruntime:onnxruntime-android:1.19.0`). Qualcomm Hexagon NPU hardware acceleration is planned for Phase 7.
+2. **Deferred Qualcomm QNN (Phase 7)**: Edge inference runs on CPU via ONNX Runtime Android (`ai.onnxruntime:onnxruntime-android:1.19.0`). Qualcomm Hexagon NPU hardware acceleration is planned for Phase 7.
 
 ---
 
@@ -318,7 +347,7 @@ cd dashboard && npm test && npm run build
 - [x] **Phase 3**: Android foreground service (`connectedDevice`), CPU ONNX inference, high-confidence alert gating ($\ge 0.85$).
 - [x] **Phase 4**: Asynchronous WebSocket publisher, local mock streamer, and real-time dark monitoring dashboard.
 - [x] **Phase 5**: Production BLE transport integration (Bumble peripheral, GATT service/characteristic, Android BleTelemetryProvider, AUTO fallback).
-- [ ] **Phase 6**: Room persistence and Node-RED automation adapter.
+- [x] **Phase 6**: Room persistence and Node-RED automation adapter.
 - [ ] **Phase 7**: Qualcomm QNN/QAIRT Hexagon HTP NPU hardware acceleration.
 
 

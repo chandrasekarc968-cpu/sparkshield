@@ -55,11 +55,15 @@ test-ble:
 test-phase5:
 	$(PYTHON) tests/verify_phase5_ble.py
 
+test-phase6:
+	$(PYTHON) tests/verify_phase6.py
+
 test-all:
 	$(PYTHON) -m pytest python_core/tests models/tests -v
 	$(PYTHON) tests/verify_android_parity.py
 	$(PYTHON) tests/verify_phase4.py
 	$(PYTHON) tests/verify_phase5_ble.py
+	$(PYTHON) tests/verify_phase6.py
 	cd dashboard && $(NPM) test
 
 run-ble-peripheral:

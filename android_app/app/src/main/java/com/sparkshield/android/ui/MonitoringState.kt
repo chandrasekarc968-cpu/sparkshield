@@ -42,7 +42,9 @@ data class MonitoringState(
     val tamperAlertLog: List<TamperEvent> = emptyList(),
     val providerMode: String = "AUTO",
     val providerDetails: String = "Initializing...",
-    val bleRssi: Int? = null
+    val bleRssi: Int? = null,
+    val persistedTamperEvents: Long = 0L,
+    val persistedSnapshots: Long = 0L
 ) {
     val latencyMs: Float
         get() = inferenceLatencyUs / 1000.0f
@@ -75,6 +77,8 @@ data class MonitoringState(
         if (tamperAlerts != other.tamperAlerts) return false
         if (latestProtocolError != other.latestProtocolError) return false
         if (tamperAlertLog != other.tamperAlertLog) return false
+        if (persistedTamperEvents != other.persistedTamperEvents) return false
+        if (persistedSnapshots != other.persistedSnapshots) return false
         return true
     }
 
@@ -102,6 +106,8 @@ data class MonitoringState(
         result = 31 * result + tamperAlerts.hashCode()
         result = 31 * result + (latestProtocolError?.hashCode() ?: 0)
         result = 31 * result + tamperAlertLog.hashCode()
+        result = 31 * result + persistedTamperEvents.hashCode()
+        result = 31 * result + persistedSnapshots.hashCode()
         return result
     }
 }

@@ -6,6 +6,11 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import com.sparkshield.android.data.SparkShieldDatabase
+import com.sparkshield.android.data.entity.TamperEventEntity
+import com.sparkshield.android.data.entity.TelemetrySnapshotEntity
+import com.sparkshield.android.data.repository.RoomTelemetryRepository
+import com.sparkshield.android.data.repository.TelemetryRepository
 import com.sparkshield.android.features.FeatureExtractor
 import com.sparkshield.android.inference.ClassLabels
 import com.sparkshield.android.inference.CpuOnnxInferenceEngine
@@ -61,6 +66,7 @@ class SparkShieldMonitoringService(
     private lateinit var sequenceTracker: SequenceTracker
     private lateinit var alertGate: AlertGate
     private lateinit var webSocketPublisher: WebSocketPublisher
+    private var telemetryRepository: TelemetryRepository? = null
 
     // Dedicated metrics counters
     private var receivedFramesCount: Long = 0L
@@ -92,6 +98,31 @@ class SparkShieldMonitoringService(
             )
         } else {
             startForeground(NotificationHelper.NOTIFICATION_SERVICE_ID, initialNotification)
+        }
+
+        instance = this
+
+        try {
+            val database = SparkShieldDatabase.getInstance(applicationContext)
+            val repo = RoomTelemetryRepository(
+                tamperDao = database.tamperEventDao(),
+                snapshotDao = database.telemetrySnapshotDao(),
+                scope = serviceScope
+            )
+            telemetryRepository = repo
+
+            serviceScope.launch {
+                repo.persistedTamperEventsCount.collect { count ->
+                    _serviceState.update { it.copy(persistedTamperEvents = count) }
+                }
+            }
+            serviceScope.launch {
+                repo.persistedSnapshotsCount.collect { count ->
+                    _serviceState.update { it.copy(persistedSnapshots = count) }
+                }
+            }
+        } catch (e: Throwable) {
+            // Gracefully handled if Android SQLite native runtime is unavailable (e.g. host JVM unit tests)
         }
 
         serviceScope.launch {
@@ -370,6 +401,21 @@ class SparkShieldMonitoringService(
                                 confidence = decision.confidence,
                                 message = decision.alertMessage
                             )
+                            // Persist confirmed tamper alert to Room database via IO
+                            val eventEntity = TamperEventEntity(
+                                timestampMs = decision.timestampMs,
+                                sequenceId = frame.sequenceId,
+                                className = decision.tamperClass.name,
+                                confidence = decision.confidence,
+                                peakMv = frame.peakMv,
+                                riseTimeNs = frame.riseTimeNs,
+                                decayTimeUs = frame.decayTimeUs,
+                                opticalMv = frame.opticalSensorMv,
+                                message = decision.alertMessage
+                            )
+                            serviceScope.launch {
+                                telemetryRepository?.recordTamperEvent(eventEntity)
+                            }
                         }
                         is AlertGate.AlertDecision.Suppressed -> {}
                     }
@@ -423,6 +469,22 @@ class SparkShieldMonitoringService(
                     tamperDetected = isTamper
                 )
                 webSocketPublisher.enqueueMessage(wsMessage)
+
+                // 6. Record telemetry snapshot to in-memory batch buffer for persistence
+                val snapshotEntity = TelemetrySnapshotEntity(
+                    timestampMs = frame.timestampMs,
+                    sequenceId = frame.sequenceId,
+                    eventFlags = frame.eventFlags,
+                    peakMv = frame.peakMv,
+                    riseTimeNs = frame.riseTimeNs,
+                    decayTimeUs = frame.decayTimeUs,
+                    opticalMv = frame.opticalSensorMv,
+                    classification = inferenceResult.label,
+                    confidence = inferenceResult.confidence,
+                    inferenceTimeUs = inferenceResult.inferenceTimeUs,
+                    tamperDetected = isTamper
+                )
+                telemetryRepository?.recordTelemetrySnapshot(snapshotEntity)
             }
             is ProtocolResult.Failure -> {
                 invalidFramesCount++
@@ -453,6 +515,12 @@ class SparkShieldMonitoringService(
             }
         }
 
+        telemetryRepository?.let { repo ->
+            serviceScope.launch {
+                repo.flushPendingSnapshots()
+            }
+        }
+
         featureExtractor.reset()
         sequenceTracker.reset()
         alertGate.reset()
@@ -468,8 +536,13 @@ class SparkShieldMonitoringService(
     override fun onDestroy() {
         stopMonitoring()
         webSocketPublisher.stop()
+        telemetryRepository?.stop()
         inferenceEngine.close()
         serviceScope.cancel()
+
+        if (instance === this) {
+            instance = null
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -491,8 +564,21 @@ class SparkShieldMonitoringService(
         const val EXTRA_TAMPER_CLASS_ID = "extra_tamper_class_id"
         const val EXTRA_TAMPER_BURST_COUNT = "extra_tamper_burst_count"
 
+        @Volatile
+        private var instance: SparkShieldMonitoringService? = null
+
         private val _serviceState = MutableStateFlow(MonitoringState())
         val serviceState: StateFlow<MonitoringState> = _serviceState.asStateFlow()
+
+        fun getTelemetryRepository(): TelemetryRepository? = instance?.telemetryRepository
+
+        fun setTelemetryRepositoryForTesting(repo: TelemetryRepository?) {
+            instance?.telemetryRepository = repo
+        }
+
+        fun setInstanceForTesting(service: SparkShieldMonitoringService?) {
+            instance = service
+        }
 
         fun startService(context: Context) {
             val intent = Intent(context, SparkShieldMonitoringService::class.java).apply {

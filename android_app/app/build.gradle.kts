@@ -61,6 +61,10 @@ dependencies {
     // ONNX Runtime Android CPU inference engine
     implementation(libs.onnxruntime.android)
 
+    // Room Database persistence
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
