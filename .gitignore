@@ -1,0 +1,26 @@
+# Python & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Artifacts & Generated Models
+artifacts/
+*.pt
+*.onnx
+*.npy
+*.npz
+models/test_data.npz
+models/sparkshield_1d_cnn.pt
+models/sparkshield_1d_cnn.onnx
+models/sparkshield_1d_cnn_quant.onnx
+models/calibration/calibration_data.npy
+
+# Environment & OS
+.venv/
+venv/
+ENV/
+.env
+.DS_Store
+Thumbs.db

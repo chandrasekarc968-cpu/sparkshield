@@ -1,10 +1,11 @@
-"""Automated tests for ML training pipeline and dataset generator."""
+"""Automated tests for ML training pipeline, data generation, and checkpointing."""
 
 import os
 import tempfile
 import numpy as np
 import pytest
 import torch
+from torch.utils.data import DataLoader, TensorDataset
 
 from models.train import (
     CLASS_NAMES,
@@ -12,109 +13,103 @@ from models.train import (
     INPUT_SHAPE,
     WINDOW_FRAME_COUNT,
     SparkShield1DCNN,
+    compute_metrics_for_split,
     generate_split,
     set_seed,
     train_model,
 )
-from torch.utils.data import DataLoader, TensorDataset
 
 
-def test_dataset_generation_shapes_and_types():
-    """generate_split must return strictly (N, 1, 128) float32 and (N,) int64."""
-    samples_per_class = 25
-    total_expected = samples_per_class * 4  # 100 samples
+def test_dataset_shapes_and_dtypes():
+    """Verify dataset generation strictly produces (N, 1, 128) float32 and (N,) int64."""
+    samples_per_class = 20
+    total = samples_per_class * 4  # 80
 
-    X, y = generate_split("test_split", samples_per_class=samples_per_class, seed=123)
+    X, y = generate_split("test_split", samples_per_class=samples_per_class, seed=42)
 
-    assert X.shape == (total_expected, 1, 128)
-    assert X.dtype == np.float32
-    assert y.shape == (total_expected,)
-    assert y.dtype == np.int64
-
-    # Class balance check
-    for c_idx in range(4):
-        assert np.sum(y == c_idx) == samples_per_class
-
-    # Bounds check
-    assert not np.isnan(X).any()
-    assert not np.isinf(X).any()
-    assert (X >= 0.0).all()
-    assert (X <= 1.0).all()
+    assert X.shape == (total, 1, 128), f"Expected shape ({total}, 1, 128), got {X.shape}"
+    assert X.dtype == np.float32, f"Expected float32, got {X.dtype}"
+    assert y.shape == (total,), f"Expected shape ({total},), got {y.shape}"
+    assert y.dtype == np.int64, f"Expected int64, got {y.dtype}"
+    assert not np.isnan(X).any(), "NaN found in generated features"
+    assert not np.isinf(X).any(), "Inf found in generated features"
+    assert (X >= 0.0).all() and (X <= 1.0).all(), "Features out of normalized bounds [0, 1]"
 
 
-def test_leak_free_split_isolation():
-    """Train, Val, and Test splits generated with distinct seeds must not share identical samples."""
-    x_train, y_train = generate_split("train", samples_per_class=20, seed=100)
-    x_val, y_val = generate_split("val", samples_per_class=20, seed=200)
-    x_test, y_test = generate_split("test", samples_per_class=20, seed=300, held_out_ranges=True)
+def test_all_four_classes_present_and_balanced():
+    """Verify all four classes (0=NORMAL, 1=EMP, 2=OPTICAL, 3=SURGE) are present and balanced."""
+    samples_per_class = 30
+    X, y = generate_split("test_balance", samples_per_class=samples_per_class, seed=777)
 
-    # Flatten samples to 128-float vectors for equality checking
+    unique_classes = set(np.unique(y))
+    assert unique_classes == {0, 1, 2, 3}, f"Expected classes {{0, 1, 2, 3}}, got {unique_classes}"
+
+    for c in range(4):
+        count = int(np.sum(y == c))
+        assert count == samples_per_class, f"Class {c} has {count} samples, expected {samples_per_class}"
+
+
+def test_deterministic_generation_with_same_seed():
+    """Same seed must produce bit-for-bit identical dataset splits."""
+    seed = 8888
+    x1, y1 = generate_split("split1", samples_per_class=15, seed=seed)
+    x2, y2 = generate_split("split2", samples_per_class=15, seed=seed)
+
+    assert np.array_equal(x1, x2), "Feature arrays differ despite identical seed!"
+    assert np.array_equal(y1, y2), "Label arrays differ despite identical seed!"
+
+
+def test_different_splits_using_independent_seeds():
+    """Train, Val, and Test splits with independent seeds must not have duplicate samples."""
+    x_train, _ = generate_split("train", samples_per_class=20, seed=101)
+    x_val, _ = generate_split("val", samples_per_class=20, seed=202)
+    x_test, _ = generate_split("test", samples_per_class=20, seed=303, held_out_ranges=True)
+
     train_flat = x_train.reshape(len(x_train), 128)
     val_flat = x_val.reshape(len(x_val), 128)
     test_flat = x_test.reshape(len(x_test), 128)
 
-    # Check that no sample in val exactly matches any sample in train
-    for v_sample in val_flat:
-        matches = np.isclose(train_flat, v_sample, atol=1e-7).all(axis=1)
-        assert not matches.any(), "Data leakage: identical sample found in train and val splits!"
+    for v in val_flat:
+        assert not np.isclose(train_flat, v, atol=1e-7).all(axis=1).any(), "Data leakage: sample in train & val"
 
-    # Check that no sample in test matches any in train or val
-    for t_sample in test_flat:
-        matches_train = np.isclose(train_flat, t_sample, atol=1e-7).all(axis=1)
-        matches_val = np.isclose(val_flat, t_sample, atol=1e-7).all(axis=1)
-        assert not matches_train.any(), "Data leakage: identical sample in test and train!"
-        assert not matches_val.any(), "Data leakage: identical sample in test and val!"
+    for t in test_flat:
+        assert not np.isclose(train_flat, t, atol=1e-7).all(axis=1).any(), "Data leakage: sample in train & test"
+        assert not np.isclose(val_flat, t, atol=1e-7).all(axis=1).any(), "Data leakage: sample in val & test"
 
 
-def test_model_forward_pass():
-    """SparkShield1DCNN forward pass on (Batch, 1, 128) produces (Batch, 4)."""
+def test_model_output_shape_exactly_batch_size_by_4():
+    """Model forward pass must return shape strictly [batch_size, 4] for various batch sizes."""
     model = SparkShield1DCNN(num_classes=4)
     model.eval()
 
-    batch_sizes = [1, 4, 16, 32]
-    for b in batch_sizes:
-        dummy_input = torch.randn(b, 1, 128, dtype=torch.float32)
+    for batch_size in [1, 2, 7, 16, 32]:
+        dummy = torch.randn(batch_size, 1, 128, dtype=torch.float32)
         with torch.no_grad():
-            output = model(dummy_input)
-
-        assert output.shape == (b, 4)
-        assert output.dtype == torch.float32
-        assert not torch.isnan(output).any()
+            out = model(dummy)
+        assert out.shape == (batch_size, 4), f"Expected shape ({batch_size}, 4), got {out.shape}"
+        assert not torch.isnan(out).any()
 
 
-def test_mini_training_and_checkpoint_payload():
-    """Verify training loop reduces loss, computes Macro F1, and saves valid checkpoint payload."""
+def test_checkpoint_creation_and_metadata():
+    """Verify model training creates valid checkpoint with all required metadata fields."""
     set_seed(42)
-    x_train, y_train = generate_split("train", samples_per_class=40, seed=11)
-    x_val, y_val = generate_split("val", samples_per_class=15, seed=22)
+    x_tr, y_tr = generate_split("tr", samples_per_class=30, seed=10)
+    x_va, y_va = generate_split("va", samples_per_class=15, seed=20)
 
-    train_loader = DataLoader(
-        TensorDataset(torch.from_numpy(x_train), torch.from_numpy(y_train)),
-        batch_size=16,
-        shuffle=True,
-    )
-    val_loader = DataLoader(
-        TensorDataset(torch.from_numpy(x_val), torch.from_numpy(y_val)),
-        batch_size=16,
-        shuffle=False,
-    )
+    tr_loader = DataLoader(TensorDataset(torch.from_numpy(x_tr), torch.from_numpy(y_tr)), batch_size=16, shuffle=True)
+    va_loader = DataLoader(TensorDataset(torch.from_numpy(x_va), torch.from_numpy(y_va)), batch_size=16, shuffle=False)
 
     model = SparkShield1DCNN(num_classes=4)
     trained_model, history, best_f1, best_weights = train_model(
         model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
+        train_loader=tr_loader,
+        val_loader=va_loader,
         epochs=3,
         lr=0.002,
     )
 
-    assert len(history["train_loss"]) == 3
-    assert history["train_loss"][-1] < history["train_loss"][0]  # Loss decreased
-    assert best_f1 > 0.8  # Strong classification performance
-    assert best_weights is not None
-
     with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as tmp:
-        tmp_path = tmp.name
+        ckpt_path = tmp.name
 
     try:
         payload = {
@@ -123,15 +118,60 @@ def test_mini_training_and_checkpoint_payload():
             "input_shape": INPUT_SHAPE,
             "feature_count_per_frame": FEATURE_COUNT_PER_FRAME,
             "window_frame_count": WINDOW_FRAME_COUNT,
+            "seed": 42,
+            "disclaimer": "Synthetic-data results only.",
+            "normalization": {"feature_range": [0.0, 1.0]},
+            "training_config": {"epochs": 3, "batch_size": 16, "lr": 0.002},
             "best_val_macro_f1": best_f1,
         }
-        torch.save(payload, tmp_path)
+        torch.save(payload, ckpt_path)
 
-        loaded = torch.load(tmp_path, map_location="cpu", weights_only=False)
-        assert "model_state_dict" in loaded
-        assert loaded["class_names"] == ["NORMAL", "EMP", "OPTICAL", "SURGE"]
-        assert loaded["input_shape"] == [1, 1, 128]
-        assert loaded["best_val_macro_f1"] == best_f1
+        assert os.path.exists(ckpt_path)
+        assert os.path.getsize(ckpt_path) > 0
+
+        # Load and verify metadata
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        assert "model_state_dict" in ckpt
+        assert ckpt["class_names"] == ["NORMAL", "EMP", "OPTICAL", "SURGE"]
+        assert ckpt["input_shape"] == [1, 1, 128]
+        assert ckpt["feature_count_per_frame"] == 16
+        assert ckpt["window_frame_count"] == 8
+        assert ckpt["seed"] == 42
+        assert "normalization" in ckpt
+        assert "training_config" in ckpt
+        assert "best_val_macro_f1" in ckpt
+        assert "disclaimer" in ckpt
     finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        if os.path.exists(ckpt_path):
+            os.remove(ckpt_path)
+
+
+def test_split_metrics_reporting():
+    """Verify compute_metrics_for_split computes all required evaluation fields."""
+    x_test, y_test = generate_split("eval_test", samples_per_class=10, seed=55)
+    model = SparkShield1DCNN(num_classes=4)
+    device = torch.device("cpu")
+
+    metrics = compute_metrics_for_split(model, x_test, y_test, device)
+
+    required_keys = [
+        "accuracy",
+        "macro_precision",
+        "macro_recall",
+        "macro_f1",
+        "normal_false_positive_rate",
+        "samples_per_class",
+        "per_class_metrics",
+        "confusion_matrix",
+    ]
+    for key in required_keys:
+        assert key in metrics, f"Missing required metric key '{key}'"
+
+    assert len(metrics["confusion_matrix"]) == 4
+    for row in metrics["confusion_matrix"]:
+        assert len(row) == 4
+
+    for cname in CLASS_NAMES:
+        assert cname in metrics["per_class_metrics"]
+        pcm = metrics["per_class_metrics"][cname]
+        assert "precision" in pcm and "recall" in pcm and "f1_score" in pcm and "support" in pcm

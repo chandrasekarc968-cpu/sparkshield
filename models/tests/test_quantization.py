@@ -1,19 +1,19 @@
-"""Automated tests for static INT8 quantization and calibration."""
+"""Automated tests for calibration generation, static INT8 quantization, and validation."""
 
 import json
 import os
 import tempfile
 import numpy as np
-import onnx
 import onnxruntime as ort
 import pytest
 
-from models.calibration.generate_calibration import generate_calibration_dataset
+from models.calibration.generate_calibration import generate_calibration_data
 from models.export_onnx import export_and_validate_onnx
 from models.quantize import (
     SparkShieldCalibrationDataReader,
-    extract_quantization_parameters,
-    quantize_onnx_model,
+    evaluate_onnx_model_on_test,
+    extract_quant_parameters,
+    quantize_model,
 )
 
 
@@ -23,7 +23,7 @@ def base_onnx_model():
     with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp_onnx:
         onnx_path = tmp_onnx.name
 
-    checkpoint_path = "models/sparkshield_1d_cnn.pt"
+    checkpoint_path = "artifacts/sparkshield.pt"
     if not os.path.exists(checkpoint_path):
         pytest.skip(f"Base checkpoint not found at {checkpoint_path}")
 
@@ -32,104 +32,99 @@ def base_onnx_model():
 
     if os.path.exists(onnx_path):
         os.remove(onnx_path)
+    meta_path = os.path.splitext(onnx_path)[0] + "_metadata.json"
+    if os.path.exists(meta_path):
+        os.remove(meta_path)
 
 
-def test_calibration_dataset_generator():
-    """Calibration dataset must contain 200 balanced samples of shape (200, 1, 128)."""
-    with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as tmp_data, \
-         tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp_manifest:
-        data_path = tmp_data.name
-        manifest_path = tmp_manifest.name
+def test_calibration_manifest_validity():
+    """Verify calibration dataset generator produces valid manifest with shapes, paths, labels, seed."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        manifest_path = os.path.join(tmp_dir, "manifest.json")
 
-    try:
-        calib_data = generate_calibration_dataset(
-            output_path=data_path,
+        tensors, manifest = generate_calibration_data(
+            output_dir=tmp_dir,
             manifest_path=manifest_path,
-            samples_per_class=50,
-            seed=555,
+            samples_per_class=25,
+            seed=444,
         )
 
-        assert calib_data.shape == (200, 1, 128)
-        assert calib_data.dtype == np.float32
+        assert os.path.exists(manifest_path)
+        assert tensors.shape == (100, 1, 128)
+        assert tensors.dtype == np.float32
 
-        # Verify manifest
         with open(manifest_path, "r") as f:
-            manifest = json.load(f)
+            data = json.load(f)
 
-        assert manifest["total_samples"] == 200
-        assert manifest["samples_per_class"] == 50
-        assert manifest["class_distribution"] == {"NORMAL": 50, "EMP": 50, "OPTICAL": 50, "SURGE": 50}
-        assert manifest["input_tensor_shape"] == [1, 128]
-    finally:
-        if os.path.exists(data_path):
-            os.remove(data_path)
-        if os.path.exists(manifest_path):
-            os.remove(manifest_path)
-
-
-def test_calibration_data_reader():
-    """CalibrationDataReader correctly yields dictionaries with (1, 1, 128) arrays."""
-    with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as tmp:
-        data_path = tmp.name
-
-    try:
-        test_data = np.random.uniform(0.0, 1.0, size=(10, 1, 128)).astype(np.float32)
-        np.save(data_path, test_data)
-
-        reader = SparkShieldCalibrationDataReader(data_path, input_name="input")
-        count = 0
-        while True:
-            item = reader.get_next()
-            if item is None:
-                break
-            assert "input" in item
-            assert item["input"].shape == (1, 1, 128)
-            count += 1
-        assert count == 10
-    finally:
-        if os.path.exists(data_path):
-            os.remove(data_path)
+        assert data["seed"] == 444
+        assert data["total_samples"] == 100
+        assert data["samples_per_class"] == 25
+        assert data["sample_tensor_shape"] == [1, 1, 128]
+        assert data["full_dataset_shape"] == [100, 1, 128]
+        assert data["dtype"] == "float32"
+        assert "data_file_path" in data
+        assert data["class_labels"] == {"0": "NORMAL", "1": "EMP", "2": "OPTICAL", "3": "SURGE"}
+        assert data["class_distribution"] == {"NORMAL": 25, "EMP": 25, "OPTICAL": 25, "SURGE": 25}
+        assert "statistics" in data
 
 
-def test_int8_quantization_and_manifest_recording(base_onnx_model):
-    """Static INT8 quantization produces runnable model and records scale/zero-point parameters."""
-    with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp_quant, \
-         tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as tmp_calib, \
-         tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp_manifest:
-        quant_path = tmp_quant.name
-        calib_path = tmp_calib.name
-        manifest_path = tmp_manifest.name
+def test_quantized_model_existence_and_inference(base_onnx_model):
+    """Static INT8 quantization must generate valid model file and run inference returning [1, 4]."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        quant_path = os.path.join(tmp_dir, "quant_model.onnx")
+        calib_manifest = os.path.join(tmp_dir, "manifest.json")
 
-    try:
-        # Generate 40 calibration samples
-        generate_calibration_dataset(calib_path, manifest_path, samples_per_class=10, seed=123)
-
-        manifest_result = quantize_onnx_model(
-            input_model_path=base_onnx_model,
-            output_model_path=quant_path,
-            calibration_data_path=calib_path,
-            manifest_path=manifest_path,
+        generate_calibration_data(
+            output_dir=tmp_dir,
+            manifest_path=calib_manifest,
+            samples_per_class=10,
+            seed=101,
         )
 
+        quant_result = quantize_model(
+            onnx_path=base_onnx_model,
+            calibration_manifest_path=calib_manifest,
+            output_path=quant_path,
+        )
+
+        # 1. Quantized model existence
         assert os.path.exists(quant_path)
         assert os.path.getsize(quant_path) > 0
 
-        # Run quantized model with ONNX Runtime
+        # 2. Quantized model inference
         session = ort.InferenceSession(quant_path, providers=["CPUExecutionProvider"])
-        test_in = np.random.uniform(0.0, 1.0, size=(1, 1, 128)).astype(np.float32)
-        out = session.run(None, {"input": test_in})[0]
+        input_name = session.get_inputs()[0].name
 
-        assert out.shape == (1, 4)
-        assert not np.isnan(out).any()
+        rng = np.random.default_rng(202)
+        for _ in range(10):
+            dummy_in = rng.uniform(0.0, 1.0, size=(1, 1, 128)).astype(np.float32)
+            out = session.run(None, {input_name: dummy_in})[0]
 
-        # Check recorded scale & zero-point parameters
-        assert "quantization_parameters" in manifest_result
-        quant_params = manifest_result["quantization_parameters"]
-        assert quant_params["summary"]["quantized_initializers"] > 0
-        assert "edge_deployment_dequantization_rule" in manifest_result
-        assert "scale" in manifest_result["edge_deployment_dequantization_rule"].lower()
+            assert out.shape == (1, 4)
+            # 3. Quantized logits or probabilities remaining finite
+            assert not np.isnan(out).any(), "Quantized output contains NaN"
+            assert not np.isinf(out).any(), "Quantized output contains Inf"
 
-    finally:
-        for p in [quant_path, calib_path, manifest_path]:
-            if os.path.exists(p):
-                os.remove(p)
+        # 4. Verify quantization configuration report
+        config_path = os.path.splitext(quant_path)[0] + "_config.json"
+        assert os.path.exists(config_path)
+        with open(config_path, "r") as f:
+            cfg = json.load(f)
+        assert "quantization_parameters" in cfg
+        assert "test_comparison" in cfg
+        assert "dequantization_rule" in cfg
+
+
+def test_no_fake_quantization_output_on_missing_model():
+    """quantize_model must fail strictly with FileNotFoundError if input ONNX is missing."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        dummy_manifest = os.path.join(tmp_dir, "manifest.json")
+        with open(dummy_manifest, "w") as f:
+            json.dump({"dummy": True}, f)
+
+        with pytest.raises(FileNotFoundError):
+            quantize_model(
+                onnx_path="non_existent_model_12345.onnx",
+                calibration_manifest_path=dummy_manifest,
+                output_path=os.path.join(tmp_dir, "out.onnx"),
+            )

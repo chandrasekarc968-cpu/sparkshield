@@ -1,8 +1,13 @@
-"""SparkShield 1D CNN Classifier Training Pipeline.
+"""SparkShield 1D CNN Classifier Training & Comprehensive Evaluation Pipeline.
 
 Generates leak-free balanced synthetic telemetry datasets across NORMAL, EMP,
 OPTICAL, and SURGE classes, trains the SparkShield1DCNN architecture, selects the
-best checkpoint by validation Macro F1, and saves model checkpoint with metadata.
+best checkpoint by validation Macro F1, evaluates on both validation and test sets,
+and saves model checkpoint and metrics JSON.
+
+Disclaimer:
+  All results are based on synthetic software telemetry simulations only.
+  No production or real-world hardware accuracy is claimed.
 """
 
 import argparse
@@ -13,15 +18,23 @@ import random
 import sys
 from typing import Dict, List, Optional, Tuple
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from sklearn.metrics import f1_score
+from sklearn.metrics import confusion_matrix, precision_recall_fscore_support, f1_score
 from torch.utils.data import DataLoader, TensorDataset
 
-# Ensure python_core is in path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# Ensure root directory is in sys.path
+_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+
 from python_core.signal_models import FeatureExtractor, SignalClass, SignalGenerator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -31,6 +44,11 @@ CLASS_NAMES = ["NORMAL", "EMP", "OPTICAL", "SURGE"]
 INPUT_SHAPE = [1, 1, 128]
 FEATURE_COUNT_PER_FRAME = 16
 WINDOW_FRAME_COUNT = 8
+SYNTHETIC_DATA_DISCLAIMER = (
+    "All results are based on deterministic synthetic telemetry simulations only. "
+    "These metrics reflect synthetic-data performance and do not claim production or "
+    "field accuracy on physical hardware."
+)
 
 FEATURE_LAYOUT = [
     "0: peak_mv / 65535.0 (Linear peak voltage)",
@@ -96,16 +114,6 @@ def generate_split(
 
     Each sample uses an independent generator stream and a dedicated
     FeatureExtractor instance so no state leaks between samples or splits.
-
-    Args:
-        split_name: Name of the split ("train", "val", "test").
-        samples_per_class: Number of samples to generate per class.
-        seed: Unique random seed for this split.
-        held_out_ranges: If True, adds wider parameter perturbation for test generalization.
-
-    Returns:
-        X: (N, 1, 128) float32 array.
-        y: (N,) int64 array.
     """
     logger.info(
         "Generating split '%s' (seed=%d, samples_per_class=%d, held_out=%s)...",
@@ -127,18 +135,16 @@ def generate_split(
     y_list: List[int] = []
 
     for signal_class, class_idx in classes:
-        for i in range(samples_per_class):
+        for _ in range(samples_per_class):
             sample_seed = int(rng.integers(1, 2_000_000_000))
             gen = SignalGenerator(seed=sample_seed)
             extractor = FeatureExtractor()
 
-            # Optional held-out parameter perturbation for test set
+            # Apply held-out variation for test generalization
             if held_out_ranges:
-                # Add mild grid frequency fluctuation (e.g. 48.5 Hz or 51.5 Hz)
                 gen.grid_freq_hz = float(rng.uniform(48.5, 51.5))
 
             # Simulate a multi-frame arrival sequence to fill sliding history naturally
-            # 7 background normal frames, then target class frame
             num_pre_frames = int(rng.integers(4, 9))
             for pre_seq in range(num_pre_frames):
                 pre_frame, _ = gen.generate(SignalClass.NORMAL, seq=pre_seq)
@@ -163,7 +169,7 @@ def generate_split(
     y_shuffled = y_arr[shuffle_indices]
 
     logger.info(
-        "Split '%s' complete: X shape %s (dtype %s), y shape %s (dtype %s)",
+        "Split '%s' generated: X shape %s (dtype %s), y shape %s (dtype %s)",
         split_name,
         x_shuffled.shape,
         x_shuffled.dtype,
@@ -171,6 +177,77 @@ def generate_split(
         y_shuffled.dtype,
     )
     return x_shuffled, y_shuffled
+
+
+def compute_metrics_for_split(
+    model: nn.Module,
+    x_data: np.ndarray,
+    y_data: np.ndarray,
+    device: torch.device,
+) -> Dict:
+    """Computes full classification metrics for a dataset split.
+
+    Metrics:
+      - accuracy
+      - macro precision
+      - macro recall
+      - macro F1
+      - per-class precision, recall, and F1
+      - confusion matrix
+      - NORMAL false-positive rate
+      - number of samples per class
+    """
+    model.eval()
+    with torch.no_grad():
+        x_tensor = torch.from_numpy(x_data).to(device)
+        logits = model(x_tensor)
+        preds = torch.argmax(logits, dim=1).cpu().numpy()
+
+    # Confusion matrix (Rows: True, Columns: Predicted)
+    cm = confusion_matrix(y_data, preds, labels=[0, 1, 2, 3])
+
+    # Per-class metrics
+    precision, recall, f1, support = precision_recall_fscore_support(
+        y_data, preds, labels=[0, 1, 2, 3], zero_division=0
+    )
+
+    # Macro averages
+    macro_precision = float(np.mean(precision))
+    macro_recall = float(np.mean(recall))
+    macro_f1 = float(np.mean(f1))
+    accuracy = float(np.mean(preds == y_data))
+
+    # False-Positive Rate on NORMAL (Class 0):
+    # Any non-NORMAL true event (EMP, OPTICAL, SURGE) classified as NORMAL
+    non_normal_mask = (y_data != 0)
+    total_non_normal = int(np.sum(non_normal_mask))
+    fp_normal = int(np.sum((preds == 0) & non_normal_mask))
+    fpr_normal = float(fp_normal / total_non_normal) if total_non_normal > 0 else 0.0
+
+    per_class_dict = {}
+    samples_per_class_dict = {}
+    for idx, cname in enumerate(CLASS_NAMES):
+        per_class_dict[cname] = {
+            "precision": float(precision[idx]),
+            "recall": float(recall[idx]),
+            "f1_score": float(f1[idx]),
+            "support": int(support[idx]),
+        }
+        samples_per_class_dict[cname] = int(np.sum(y_data == idx))
+
+    return {
+        "accuracy": accuracy,
+        "macro_precision": macro_precision,
+        "macro_recall": macro_recall,
+        "macro_f1": macro_f1,
+        "normal_false_positive_rate": fpr_normal,
+        "normal_false_positive_count": fp_normal,
+        "total_non_normal_samples": total_non_normal,
+        "samples_per_class": samples_per_class_dict,
+        "total_samples": int(len(y_data)),
+        "per_class_metrics": per_class_dict,
+        "confusion_matrix": cm.tolist(),
+    }
 
 
 def train_model(
@@ -181,7 +258,7 @@ def train_model(
     lr: float = 0.001,
     device: Optional[torch.device] = None,
 ) -> Tuple[nn.Module, Dict[str, List[float]], float, Dict]:
-    """Trains SparkShield1DCNN with validation Macro F1 model checkpointing."""
+    """Trains SparkShield1DCNN with validation Macro F1 checkpoint selection."""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
@@ -199,10 +276,9 @@ def train_model(
     best_macro_f1 = -1.0
     best_weights = None
 
-    logger.info("Starting training for %d epochs on device '%s'...", epochs, device)
+    logger.info("Training SparkShield1DCNN for %d epochs on device '%s'...", epochs, device)
 
     for epoch in range(1, epochs + 1):
-        # Training phase
         model.train()
         running_loss = 0.0
         total_train_samples = 0
@@ -222,7 +298,7 @@ def train_model(
 
         epoch_train_loss = running_loss / max(1, total_train_samples)
 
-        # Validation phase
+        # Validation
         model.eval()
         val_loss = 0.0
         val_samples = 0
@@ -266,7 +342,7 @@ def train_model(
         if epoch_macro_f1 > best_macro_f1:
             best_macro_f1 = epoch_macro_f1
             best_weights = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-            logger.info(">>> New best model found at epoch %d (Val Macro F1: %.4f)", epoch, best_macro_f1)
+            logger.info(">>> New best model checkpoint found at epoch %d (Val Macro F1: %.4f)", epoch, best_macro_f1)
 
     if best_weights is not None:
         model.load_state_dict(best_weights)
@@ -276,46 +352,51 @@ def train_model(
 
 def main():
     parser = argparse.ArgumentParser(description="SparkShield 1D CNN Model Training")
-    parser.add_argument("--epochs", type=int, default=12, help="Number of training epochs")
+    parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs")
+    parser.add_argument("--samples-per-class", type=int, default=1000, help="Train samples per class")
+    parser.add_argument("--val-samples-per-class", type=int, default=200, help="Val samples per class")
+    parser.add_argument("--test-samples-per-class", type=int, default=200, help="Test samples per class")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
-    parser.add_argument("--train-samples", type=int, default=1000, help="Train samples per class")
-    parser.add_argument("--val-samples", type=int, default=200, help="Val samples per class")
-    parser.add_argument("--test-samples", type=int, default=200, help="Test samples per class")
     parser.add_argument("--seed", type=int, default=42, help="Master random seed")
-    parser.add_argument("--output", type=str, default="models/sparkshield_1d_cnn.pt", help="Checkpoint path")
-    parser.add_argument("--metadata-out", type=str, default="models/split_metadata.json", help="Metadata path")
+    parser.add_argument("--output", type=str, default="artifacts/sparkshield.pt", help="Checkpoint output path")
+    parser.add_argument("--metrics", type=str, default="artifacts/metrics.json", help="Metrics JSON output path")
     args = parser.parse_args()
 
     set_seed(args.seed)
 
-    # 1. Independent seeds for splits to eliminate leakage
+    # Independent seeds for splits
     train_seed = args.seed + 101
     val_seed = args.seed + 202
     test_seed = args.seed + 303
 
-    # 2. Generate datasets
-    x_train, y_train = generate_split("train", args.train_samples, train_seed, held_out_ranges=False)
-    x_val, y_val = generate_split("val", args.val_samples, val_seed, held_out_ranges=False)
-    x_test, y_test = generate_split("test", args.test_samples, test_seed, held_out_ranges=True)
+    # Generate datasets
+    x_train, y_train = generate_split("train", args.samples_per_class, train_seed, held_out_ranges=False)
+    x_val, y_val = generate_split("val", args.val_samples_per_class, val_seed, held_out_ranges=False)
+    x_test, y_test = generate_split("test", args.test_samples_per_class, test_seed, held_out_ranges=True)
 
-    # Save test dataset for evaluate.py and test scripts
-    test_data_path = "models/test_data.npz"
+    # Save test dataset alongside output for downstream export/quantize parity evaluation
+    output_dir = os.path.dirname(args.output) or "."
+    os.makedirs(output_dir, exist_ok=True)
+    metrics_dir = os.path.dirname(args.metrics) or "."
+    os.makedirs(metrics_dir, exist_ok=True)
+
+    test_data_path = os.path.join(output_dir, "test_data.npz")
     np.savez_compressed(test_data_path, x_test=x_test, y_test=y_test)
     logger.info("Saved test dataset to %s", test_data_path)
 
-    # 3. Create PyTorch DataLoaders
+    # PyTorch DataLoaders
     train_dataset = TensorDataset(torch.from_numpy(x_train), torch.from_numpy(y_train))
     val_dataset = TensorDataset(torch.from_numpy(x_val), torch.from_numpy(y_val))
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
-    # 4. Initialize model
+    # Initialize model
     model = SparkShield1DCNN(num_classes=4)
-
-    # 5. Train model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Train
     trained_model, history, best_val_f1, best_weights = train_model(
         model=model,
         train_loader=train_loader,
@@ -325,7 +406,18 @@ def main():
         device=device,
     )
 
-    # 6. Save checkpoint with full metadata
+    # Compute comprehensive evaluation metrics on validation and test splits
+    val_metrics = compute_metrics_for_split(trained_model, x_val, y_val, device)
+    test_metrics = compute_metrics_for_split(trained_model, x_test, y_test, device)
+
+    logger.info("================ VALIDATION METRICS (SYNTHETIC) ================")
+    logger.info("Accuracy: %.4f | Macro F1: %.4f | NORMAL FPR: %.6f",
+                val_metrics["accuracy"], val_metrics["macro_f1"], val_metrics["normal_false_positive_rate"])
+    logger.info("================ TEST METRICS (SYNTHETIC) ======================")
+    logger.info("Accuracy: %.4f | Macro F1: %.4f | NORMAL FPR: %.6f",
+                test_metrics["accuracy"], test_metrics["macro_f1"], test_metrics["normal_false_positive_rate"])
+
+    # Build checkpoint payload
     checkpoint_payload = {
         "model_state_dict": best_weights,
         "class_names": CLASS_NAMES,
@@ -333,6 +425,7 @@ def main():
         "feature_count_per_frame": FEATURE_COUNT_PER_FRAME,
         "window_frame_count": WINDOW_FRAME_COUNT,
         "seed": args.seed,
+        "disclaimer": SYNTHETIC_DATA_DISCLAIMER,
         "normalization": {
             "peak_mv_scale": 65535.0,
             "rise_time_scale": 65535.0,
@@ -348,67 +441,35 @@ def main():
             "lr": args.lr,
             "optimizer": "Adam",
             "loss": "CrossEntropyLoss",
-            "train_samples_per_class": args.train_samples,
-            "val_samples_per_class": args.val_samples,
-            "test_samples_per_class": args.test_samples,
+            "samples_per_class": args.samples_per_class,
+            "val_samples_per_class": args.val_samples_per_class,
+            "test_samples_per_class": args.test_samples_per_class,
             "device": str(device),
         },
         "best_val_macro_f1": best_val_f1,
     }
 
-    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     torch.save(checkpoint_payload, args.output)
     logger.info("Saved model checkpoint to %s", args.output)
 
-    # 7. Persist split metadata JSON
-    split_metadata = {
-        "seed": args.seed,
-        "train_seed": train_seed,
-        "val_seed": val_seed,
-        "test_seed": test_seed,
-        "sample_counts": {
-            "train_total": len(y_train),
-            "val_total": len(y_val),
-            "test_total": len(y_test),
-            "per_class_train": args.train_samples,
-            "per_class_val": args.val_samples,
-            "per_class_test": args.test_samples,
-        },
-        "class_mapping": {str(idx): name for idx, name in enumerate(CLASS_NAMES)},
-        "feature_layout": FEATURE_LAYOUT,
+    # Save comprehensive metrics JSON
+    full_metrics_report = {
+        "disclaimer": SYNTHETIC_DATA_DISCLAIMER,
+        "environment": "Synthetic Software Simulation",
+        "checkpoint_path": args.output,
+        "model_architecture": "SparkShield1DCNN",
         "input_shape": INPUT_SHAPE,
-        "normalization_rules": checkpoint_payload["normalization"],
-        "parameter_ranges": {
-            "NORMAL": {
-                "peak_mv": [2800, 3600],
-                "rise_time_code": [1000, 65535],
-                "decay_time_us": [1000, 65535],
-                "optical_sensor_mv": [50, 400],
-            },
-            "EMP": {
-                "peak_mv": [20000, 65535],
-                "rise_time_code": [1, 3],
-                "decay_time_us": [1, 15],
-                "optical_sensor_mv": [50, 400],
-            },
-            "OPTICAL": {
-                "peak_mv": [2800, 3600],
-                "rise_time_code": [20000, 45000],
-                "decay_time_us": [30000, 60000],
-                "optical_sensor_mv": [3200, 5000],
-            },
-            "SURGE": {
-                "peak_mv": [6000, 25000],
-                "rise_time_code": [1000, 5001],
-                "decay_time_us": [500, 5001],
-                "optical_sensor_mv": [50, 400],
-            },
-        },
+        "class_names": CLASS_NAMES,
+        "seed": args.seed,
+        "validation_metrics": val_metrics,
+        "test_metrics": test_metrics,
+        "training_config": checkpoint_payload["training_config"],
+        "normalization": checkpoint_payload["normalization"],
     }
 
-    with open(args.metadata_out, "w") as f:
-        json.dump(split_metadata, f, indent=2)
-    logger.info("Saved split metadata to %s", args.metadata_out)
+    with open(args.metrics, "w") as f:
+        json.dump(full_metrics_report, f, indent=2)
+    logger.info("Saved complete metrics JSON to %s", args.metrics)
 
 
 if __name__ == "__main__":
