@@ -154,11 +154,12 @@ class AndroidInferencePipeline:
 
 async def run_phase5_e2e_verification():
     print("=" * 75)
-    print("SparkShield Phase 5: Production BLE GATT Transport End-to-End Verification")
+    print("SparkShield Phase 5: Virtual-Bus BLE GATT Transport End-to-End Verification")
+    print("  (Using Bumble LocalLink Virtual HCI Link - Software-Only Simulation)")
     print("=" * 75)
 
     # 1. Setup virtual BLE environment (Bumble local link)
-    print("[1/7] Initializing virtual BLE bus and Bumble controllers...")
+    print("[1/7] Initializing virtual BLE bus and Bumble controllers (software-only loopback)...")
     link = LocalLink()
     c_periph = Controller("c_periph", link=link)
     c_central = Controller("c_central", link=link)
@@ -212,16 +213,18 @@ async def run_phase5_e2e_verification():
         await peer.subscribe(telemetry_char, on_notification)
         print("      PASSED: Telemetry characteristic discovered and CCCD notifications enabled.")
 
-        # 4. Initialize ML Pipeline with model asset
-        print("[4/7] Loading ONNX model and initializing Android inference pipeline...")
-        model_path = os.path.join(REPO_ROOT, "artifacts", "sparkshield.onnx")
+        # 4. Initialize ML Pipeline with Android asset model
+        print("[4/7] Loading ONNX model asset from Android project (sparkshield_1d_cnn.onnx)...")
+        model_path = os.path.join(REPO_ROOT, "android_app", "app", "src", "main", "assets", "sparkshield_1d_cnn.onnx")
         if not os.path.exists(model_path):
             model_path = os.path.join(REPO_ROOT, "android_app", "app", "src", "main", "assets", "sparkshield.onnx")
-        assert os.path.exists(model_path), f"ONNX model missing at {model_path}"
+        if not os.path.exists(model_path):
+            model_path = os.path.join(REPO_ROOT, "artifacts", "sparkshield.onnx")
+        assert os.path.exists(model_path), f"ONNX model asset missing at {model_path}"
 
         pipeline = AndroidInferencePipeline(model_path)
         seq_tracker = BleSequenceTracker()
-        print("      PASSED: ONNX model loaded (static shape [1, 1, 128] -> [1, 4]).")
+        print(f"      PASSED: Loaded Android asset model: {os.path.basename(model_path)} (static shape [1, 1, 128] -> [1, 4]).")
 
         # 5. Stream valid frames over BLE and verify inference + WebSocket output
         print("[5/7] Streaming simulated telemetry over BLE: NORMAL, EMP, OPTICAL, SURGE...")
@@ -332,7 +335,29 @@ async def run_phase5_e2e_verification():
         assert tracker_test.dropped_count == 4
         assert tracker_test.process(16) == "OK"
 
-        print("      PASSED: Truncated frames, invalid magic, CRC failures, and sequence gaps correctly handled.")
+        # E: Sequence rollover at uint32 boundary (4294967295 -> 0)
+        from python_core.frame_protocol import SequenceTracker as FullSequenceTracker
+        full_tracker = FullSequenceTracker(initial_sequence=0xFFFFFFFF)
+        is_cont, dropped = full_tracker.process_sequence(0)
+        assert is_cont is True and dropped == 0, f"Expected 0 dropped on uint32 rollover, got {dropped}"
+
+        # F: Sequence rollover across boundary with gap (0xFFFFFFFE -> 2 -> 3 dropped)
+        full_tracker_gap = FullSequenceTracker(initial_sequence=0xFFFFFFFE)
+        is_cont, dropped = full_tracker_gap.process_sequence(2)
+        assert is_cont is False and dropped == 3, f"Expected 3 dropped across rollover gap, got {dropped}"
+
+        # G: Verify invalid frames never reach pipeline inference or WebSocket
+        processed_count_before = len(verified_messages)
+        invalid_raw = b"\x00" * 29
+        try:
+            unpacked_bad = unpack_frame(invalid_raw)
+            pipeline.process_frame(unpacked_bad)
+            assert False, "Invalid raw frame should never reach inference"
+        except ProtocolError:
+            pass  # Parser dropped it before pipeline
+        assert len(verified_messages) == processed_count_before, "Invalid frame must never produce WebSocket payload"
+
+        print("      PASSED: Truncated frames, invalid magic, CRC failures, uint32 rollover, and sequence gaps correctly handled.")
 
         # 7. Disconnect and clean teardown
         print("[7/7] Testing clean disconnection and peripheral shutdown...")

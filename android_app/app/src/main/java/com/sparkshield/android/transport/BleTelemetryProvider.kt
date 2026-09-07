@@ -426,13 +426,16 @@ class BleTelemetryProvider(
         }
     }
 
+    val isStreaming: Boolean
+        get() = _connectionState.value is BleConnectionState.Streaming
+
     @SuppressLint("MissingPermission")
     private fun closeGatt() {
         try {
             bluetoothGatt?.disconnect()
             bluetoothGatt?.close()
         } catch (e: Exception) {
-            Log.w(tag, "Error closing GATT: ${e.message}")
+            logW(tag, "Error closing GATT: ${e.message}")
         }
         bluetoothGatt = null
     }
@@ -446,7 +449,7 @@ class BleTelemetryProvider(
         closeGatt()
         sequenceTracker.reset()
         _connectionState.value = BleConnectionState.Disconnected("Manually stopped")
-        Log.i(tag, "BleTelemetryProvider stopped cleanly.")
+        logI(tag, "BleTelemetryProvider stopped cleanly.")
     }
 
     companion object {

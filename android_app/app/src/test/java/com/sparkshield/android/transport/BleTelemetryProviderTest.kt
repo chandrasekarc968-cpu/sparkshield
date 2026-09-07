@@ -190,6 +190,67 @@ class BleTelemetryProviderTest {
     }
 
     @Test
+    fun testSequenceRolloverAtUint32Boundary() {
+        val provider = BleTelemetryProvider(context = null)
+
+        fun createRawFrame(seqId: Long): ByteArray {
+            val buf = ByteBuffer.allocate(29).order(ByteOrder.BIG_ENDIAN)
+            buf.putShort(0x5353.toShort())
+            buf.putInt(seqId.toInt())
+            buf.putInt(1000)
+            buf.put(0x08.toByte()) // NORMAL
+            buf.putShort(3250.toShort())
+            buf.putShort(500.toShort())
+            buf.putShort(50.toShort())
+            buf.putShort(150.toShort())
+            buf.put(ByteArray(8) { 10 })
+            val crc = Crc16Ccitt.compute(buf.array(), 0, 27)
+            buf.putShort(crc.toShort())
+            return buf.array()
+        }
+
+        // 1. Initial frame at max uint32 (4294967295L)
+        provider.handleIncomingFrame(createRawFrame(0xFFFFFFFFL))
+        assertEquals(0L, provider.droppedFrameCount.value)
+
+        // 2. Rollover to 0L: must be continuous with 0 dropped frames
+        provider.handleIncomingFrame(createRawFrame(0L))
+        assertEquals(0L, provider.droppedFrameCount.value)
+
+        // 3. Rollover from 0xFFFFFFFEL to 2L (missed 0xFFFFFFFFL, 0L, 1L -> 3 dropped)
+        val providerWithGap = BleTelemetryProvider(context = null)
+        providerWithGap.handleIncomingFrame(createRawFrame(0xFFFFFFFEL))
+        assertEquals(0L, providerWithGap.droppedFrameCount.value)
+
+        providerWithGap.handleIncomingFrame(createRawFrame(2L))
+        assertEquals(3L, providerWithGap.droppedFrameCount.value)
+    }
+
+    @Test
+    fun testInvalidFlagsNeverEnqueued() {
+        val provider = BleTelemetryProvider(context = null)
+
+        // Create frame with conflict flags (NORMAL 0x08 | EMP 0x01 = 0x09)
+        val buf = ByteBuffer.allocate(29).order(ByteOrder.BIG_ENDIAN)
+        buf.putShort(0x5353.toShort())
+        buf.putInt(100)
+        buf.putInt(1000)
+        buf.put(0x09.toByte()) // Invalid conflict flags
+        buf.putShort(3250.toShort())
+        buf.putShort(500.toShort())
+        buf.putShort(50.toShort())
+        buf.putShort(150.toShort())
+        buf.put(ByteArray(8) { 10 })
+        val crc = Crc16Ccitt.compute(buf.array(), 0, 27)
+        buf.putShort(crc.toShort())
+
+        provider.handleIncomingFrame(buf.array())
+
+        val received = provider.frameChannel.tryReceive().getOrNull()
+        assertNull("Invalid frame must never reach channel or inference", received)
+    }
+
+    @Test
     fun testCleanShutdown() = runBlocking {
         val provider = BleTelemetryProvider(context = null)
         provider.setConnectionStateForTesting(BleConnectionState.Streaming)

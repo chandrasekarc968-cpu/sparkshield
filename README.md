@@ -210,9 +210,9 @@ npm run preview       # Preview production build on http://localhost:3000
 
 ---
 
-## Phase 5: Production BLE GATT Transport Integration
+## Phase 5: Production BLE GATT Transport Integration & Hardening
 
-Phase 5 establishes real-time Bluetooth Low Energy (BLE) GATT telemetry streaming from the Python host peripheral to the Android edge inference engine.
+Phase 5 establishes real-time Bluetooth Low Energy (BLE) GATT telemetry streaming from the Python host peripheral (`SparkShield-Core`) to the Android edge inference engine.
 
 ### BLE Architecture & GATT Specifications
 - **Device Name**: `SparkShield-Core`
@@ -222,62 +222,86 @@ Phase 5 establishes real-time Bluetooth Low Energy (BLE) GATT telemetry streamin
 - **MTU Size**: `247` bytes negotiated for atomic, non-fragmented 29-byte frame deliveries
 - **Payload**: Strict 29-byte big-endian frames with CRC-16-CCITT validation
 
-### Android Permissions (API 31 - 36 / Android 12 - 16)
-The following runtime permissions are declared and handled:
-- `android.permission.BLUETOOTH_SCAN`: Configured with `neverForLocation` flag
-- `android.permission.BLUETOOTH_CONNECT`: For connecting to GATT server and receiving notifications
-- `android.permission.POST_NOTIFICATIONS`: For high-priority tamper alerts (Android 13+)
-- `android.permission.ACCESS_FINE_LOCATION`: Fallback for legacy devices (Android <= 11)
+### Transport Modes in `bumble_service.py`
+The Python Bumble peripheral supports two explicitly separated operational modes:
 
-### Provider Modes: `AUTO`, `BLE`, `MOCK`
-The Android monitoring service supports runtime-selectable telemetry ingestion:
-1. **`AUTO` (Default)**: Inspects Bluetooth availability and runtime permissions. If present, connects to `SparkShield-Core` over BLE. If BLE permissions or hardware adapter are unavailable, it seamlessly falls back to `MockTelemetryProvider` with a visible status reason (`Fallback to MOCK: Bluetooth permissions not granted`).
-2. **`BLE`**: Strictly requires BLE connection; attempts reconnection with bounded exponential backoff (1s, 2s, 4s, 8s, up to 15s max).
-3. **`MOCK`**: Pure local deterministic synthetic streaming without touching Bluetooth radio.
+1. **Virtual Mode (`--mode virtual`)**:
+   - Uses Bumble `LocalLink` in-memory software loopback.
+   - Deterministic and dependency-free; ideal for CI environments, unit tests, and automated pipeline verification.
+   - Run command:
+     ```powershell
+     python -m python_core.bumble_service --mode virtual --rate 10
+     ```
 
-### Running the Python Bumble Peripheral
-To launch the Bumble BLE peripheral:
-```powershell
-python -m python_core.bumble_service --rate 10 --name SparkShield-Core
-```
-Or via Makefile:
-```bash
-make run-ble-peripheral
-```
+2. **Hardware HCI Mode (`--mode hardware`)**:
+   - Connects directly to a physical Bluetooth USB dongle or serial HCI controller via Bumble's transport engine (`bumble.transport.open_transport`).
+   - Supports USB dongles (e.g. `--transport usb:0`), UART/Serial (e.g. `--transport serial:COM3:115200`), or HCI sockets.
+   - **Fail-Fast Safety**: Fails cleanly with exit code `1` and descriptive error diagnostics if the physical adapter or HCI transport is absent or in use.
+   - Run command:
+     ```powershell
+     python -m python_core.bumble_service --mode hardware --transport usb:0 --rate 10
+     ```
 
-### Bluetooth Troubleshooting
-- **Missing Permissions**: Grant `Nearby Devices` (Bluetooth) permission to SparkShield in Android App Info settings.
-- **Adapter Disabled**: Turn on Bluetooth in system settings.
-- **Peripheral Not Found**: Ensure Python peripheral is running and not already bonded to another central.
-- **Notification Stalls**: Check if MTU 247 negotiation completed. Bounded channel buffer (`100` frames, `DROP_OLDEST`) ensures backpressure never blocks GATT callback threads.
+### Android Provider Lifecycle & Atomic Fallback
+`SparkShieldMonitoringService` and `BleTelemetryProvider` enforce robust lifecycle management:
+- **Atomic Provider Transition (`switchProvider`)**: When switching between BLE and MOCK (e.g., during `AUTO` fallback or manual mode toggles), the service atomically cancels the active coroutine collector job, stops the old provider, unregisters BLE callbacks, installs the new provider, starts it, and launches exactly one fresh collection job.
+- **`AUTO` Fallback Ingestion**: If BLE permissions are missing or the Bluetooth adapter is disabled, the service logs `BleConnectionState.PermissionDenied` or `AdapterUnavailable`, automatically switches to `MockTelemetryProvider`, and continues frame parsing and inference without stall or pipeline death.
+- **Accurate Connection State**: `isConnected` is set to `true` strictly when BLE reaches `BleConnectionState.Streaming` (CCCD notifications enabled) or when MOCK is active.
+- **Leak-Free Resource Cleanup**: `BleTelemetryProvider.stop()` unregisters scan callbacks, closes GATT clients, cancels pending reconnect timers, and purges channel buffers.
+
+### Hardware Testing Guide (Real Android Device + Physical Dongle)
+For physical hardware validation (beyond the virtual loopback tests):
+
+1. **Host Setup**:
+   - Plug a compatible Bluetooth 4.2+ USB adapter into the host PC (e.g., Realtek or Cambridge Silicon Radio chipsets supported by libusb/pyusb or WinUSB).
+   - Start the hardware BLE peripheral:
+     ```powershell
+     python -m python_core.bumble_service --mode hardware --transport usb:0 --rate 10
+     ```
+   - Verify `SparkShield-Core` starts advertising service `1A860001-C7E2-432A-8C2A-8B6C7741E001`.
+
+2. **Android Device Setup**:
+   - Deploy `android_app` to a physical Android device running Android 12+ (API 31+).
+   - Grant `Nearby Devices` (Bluetooth) and `Notification` permissions when prompted.
+   - In App Settings or Intent launcher, select `ProviderMode.BLE`.
+   - The app will scan for `SparkShield-Core`, connect, request MTU 247, discover the telemetry characteristic, write `0x0001` to CCCD, and begin streaming live 29-byte frames into the inference pipeline.
+
+### Automated Test Suite vs. Hardware Validation Notice
+> [!NOTE]
+> **Validation Transparency**:
+> - `tests/verify_phase5_ble.py` validates the complete BLE GATT protocol stack, MTU negotiation, characteristic discovery, CCCD subscription, ONNX inference, alert gating, CRC rejection, and sequence tracking over a **virtual Bumble bus** (`LocalLink`).
+> - Physical wireless propagation and OS-level Bluetooth stack performance require the hardware test procedure documented above with a physical dongle and target Android device.
 
 ### Verification & Test Commands
 ```powershell
-# Run Bumble BLE unit tests
-python -m pytest python_core/tests/test_ble_bumble.py -v
+# 1. Run Python protocol and model regression suite
+python -m pytest python_core/tests models/tests -v
 
-# Run Phase 5 end-to-end BLE GATT pipeline verifier
+# 2. Run Android parity verifier
+python tests/verify_android_parity.py
+
+# 3. Run Phase 4 WebSocket and dashboard verifier
+python tests/verify_phase4.py
+
+# 4. Run Phase 5 virtual-bus BLE GATT end-to-end verifier
 python tests/verify_phase5_ble.py
 
-# Run complete regression suite
-make test-all
+# 5. Run Dashboard test and build
+cd dashboard && npm test && npm run build
 ```
 
 ---
 
-## Phase 5 Demo Checklist
+## Phase 5 Hardening Checklist
 
-- [x] **Peripheral Advertising**: Python Bumble peripheral advertises `SparkShield-Core` with service `1A860001-C7E2-432A-8C2A-8B6C7741E001`.
-- [x] **GATT Characteristic**: Telemetry characteristic `1A860002-C7E2-432A-8C2A-8B6C7741E001` supports `READ` and `NOTIFY`.
-- [x] **MTU 247 Negotiation**: Peripheral and central negotiate MTU $\ge 247$ to stream 29-byte frames atomically.
-- [x] **Android BleTelemetryProvider**: Implements `TelemetryProvider` with non-blocking bounded buffering (`Channel(100, DROP_OLDEST)`).
-- [x] **Provider Mode Auto-Fallback**: In `AUTO` mode, gracefully falls back to `MockTelemetryProvider` when Bluetooth permissions or adapter are missing.
-- [x] **Frame Integrity & CRC**: Validates length (29B), magic (`0x5353`), CRC-16, and field ranges; drops malformed frames cleanly.
-- [x] **Sequence Tracking**: SequenceTracker monitors monotonically increasing sequence IDs and logs gaps and duplicate frames.
-- [x] **Bounded Backoff Reconnect**: Reconnection attempts scale exponentially (1s, 2s, 4s, 8s) up to 15s max.
-- [x] **End-to-End Pipeline**: Verified flow: Bumble Peripheral $\to$ BleTelemetryProvider $\to$ FeatureExtractor $\to$ ONNX Inference $\to$ WebSocket Publisher $\to$ Dashboard.
-
----
+- [x] **Separated BLE Modes**: `python_core/bumble_service.py` features explicit `--mode virtual` and `--mode hardware` with `--transport <spec>`.
+- [x] **Fail-Fast Adapter Detection**: Hardware mode exits cleanly with informative instructions if no physical adapter is detected.
+- [x] **Atomic Provider Switching**: Android service safely cancels active collectors before replacing providers, preventing leaks and duplicate jobs.
+- [x] **Autonomous Fallback Ingestion**: In `AUTO` mode, pipeline seamlessly continues ingesting frames via `MockTelemetryProvider` after BLE failure.
+- [x] **Streaming State Gating**: `isConnected` is asserted strictly when BLE achieves `Streaming` state (CCCD subscription confirmed).
+- [x] **32-Bit Rollover & Validation**: Verified sequence rollover at uint32 boundary (`0xFFFFFFFF` $\to$ `0`) and strict event flag rejection across Python and Kotlin.
+- [x] **Repository Hygiene**: Staged and untracked build artifacts (`.gradle`, `node_modules`) removed; `.gitignore` hardened for Android model assets.
+- [x] **Honest Validation Labeling**: Virtual tests clearly demarcated from physical hardware test procedures.
 
 ## Known Limitations
 

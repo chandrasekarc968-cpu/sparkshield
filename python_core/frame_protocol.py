@@ -162,7 +162,7 @@ def pack_frame(frame: TelemetryFrame) -> bytes:
 
 
 def validate_frame(data: bytes) -> Tuple[bool, Optional[str]]:
-    """Validates raw frame length, magic word, and CRC.
+    """Validates raw frame length, magic word, event flags, and CRC.
 
     Args:
         data: Raw buffer to validate.
@@ -177,6 +177,19 @@ def validate_frame(data: bytes) -> Tuple[bool, Optional[str]]:
     if magic != FRAME_MAGIC:
         return False, f"Magic mismatch: expected 0x{FRAME_MAGIC:04X}, got 0x{magic:04X}"
 
+    # Event flags validation (offset 10)
+    flags = data[10]
+    if (flags & 0xF0) != 0:
+        return False, f"Invalid event_flags: reserved upper bits set (0x{flags:02X})"
+    if flags == 0:
+        return False, "Invalid event_flags: no event flag bits asserted"
+    is_normal = (flags & FLAG_NORMAL) != 0
+    is_tamper = (flags & (FLAG_EMP | FLAG_OPTICAL | FLAG_SURGE)) != 0
+    if is_normal and is_tamper:
+        return False, f"Conflicting event_flags (NORMAL and tamper bits set): 0x{flags:02X}"
+    if bin(flags).count("1") > 1:
+        return False, f"Invalid event_flags: multiple conflicting class flags asserted: 0x{flags:02X}"
+
     expected_crc = struct.unpack(">H", data[27:29])[0]
     calculated_crc = crc16_ccitt(data[0:PAYLOAD_LENGTH_FOR_CRC])
     if calculated_crc != expected_crc:
@@ -190,13 +203,13 @@ def unpack_frame(data: bytes, strict: bool = True) -> TelemetryFrame:
 
     Args:
         data: 29-byte buffer.
-        strict: If True, raises exceptions on length, magic, or CRC failure.
+        strict: If True, raises exceptions on length, magic, event flags, or CRC failure.
 
     Returns:
         Deserialized TelemetryFrame.
 
     Raises:
-        MalformedFrameError: If length != 29.
+        MalformedFrameError: If length != 29 or flags are invalid.
         MagicMismatchError: If magic != 0x5353.
         CrcMismatchError: If CRC does not match.
     """
@@ -214,6 +227,8 @@ def unpack_frame(data: bytes, strict: bool = True) -> TelemetryFrame:
             raise MagicMismatchError(
                 f"Invalid magic: expected 0x{FRAME_MAGIC:04X}, got 0x{magic:04X}"
             )
+        if (flags & 0xF0) != 0 or flags == 0 or ((flags & FLAG_NORMAL) and (flags & (FLAG_EMP | FLAG_OPTICAL | FLAG_SURGE))) or bin(flags).count("1") > 1:
+            raise MalformedFrameError(f"Invalid event flags: 0x{flags:02X}")
         calc_crc = crc16_ccitt(data[0:PAYLOAD_LENGTH_FOR_CRC])
         if calc_crc != crc_val:
             raise CrcMismatchError(

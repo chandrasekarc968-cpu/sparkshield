@@ -210,7 +210,7 @@ By default, the provider executes a continuous repeating cycle:
 
 ---
 
-## 8. Bluetooth Low Energy (BLE) GATT Integration (Phase 5)
+## 8. Bluetooth Low Energy (BLE) GATT Integration & Provider Lifecycle (Phase 5)
 
 `BleTelemetryProvider` implements the `TelemetryProvider` interface over Bluetooth Low Energy:
 - **Service UUID**: `1A860001-C7E2-432A-8C2A-8B6C7741E001`
@@ -218,19 +218,33 @@ By default, the provider executes a continuous repeating cycle:
 - **CCCD Descriptor UUID**: `00002902-0000-1000-8000-00805f9b34fb`
 - **MTU**: Requests `247` bytes upon connection for atomic 29-byte frame delivery without fragmentation.
 - **Buffering**: Bounded channel buffer `Channel<ByteArray>(100, BufferOverflow.DROP_OLDEST)` guarantees that inference processing or UI lag never stalls the GATT callback thread.
+- **Connection Gating**: `isConnected` is set to `true` strictly when `BleConnectionState.Streaming` is achieved (CCCD notification descriptor successfully written).
 
-### Android Permissions
-Supported across API levels up to Android 16:
-- `BLUETOOTH_SCAN` (`neverForLocation`)
-- `BLUETOOTH_CONNECT`
-- `POST_NOTIFICATIONS` (Android 13+)
-- `ACCESS_FINE_LOCATION` (Android 11 and older)
-
-### Provider Mode Selection (`ProviderMode.kt`)
+### Provider Mode Selection & Lifecycle Architecture
 Configurable at runtime via Intent extra `SparkShieldMonitoringService.EXTRA_PROVIDER_MODE`:
-- `AUTO` (Default): Checks for Bluetooth permissions and adapter status. If available, connects to `SparkShield-Core` via BLE. If permissions or adapter are missing, falls back transparently to `MockTelemetryProvider` with status reason shown on the UI.
-- `BLE`: Forces BLE connection; enters bounded exponential reconnect loop if disconnected.
-- `MOCK`: Uses pure deterministic local simulation.
+- `AUTO` (Default): Evaluates BLE permissions and adapter state. If available, connects to `SparkShield-Core`. If Bluetooth permissions are denied or the adapter is disabled, the service automatically initiates an atomic fallback to `MockTelemetryProvider` with a visible status reason.
+- `BLE`: Dedicated BLE mode with bounded exponential reconnect backoff (1s, 2s, 4s, 8s, up to 15s max).
+- `MOCK`: Pure deterministic synthetic stream generation.
+
+### Atomic Provider Transition (`switchProvider`)
+`SparkShieldMonitoringService` ensures zero coroutine leaks or duplicate collectors during provider switches:
+1. Cancels any active frame processing coroutine job atomically.
+2. Cancels any active BLE connection state monitor job.
+3. Invokes `stop()` on the outgoing provider, ensuring all GATT connections, scan callbacks, and channel buffers are released.
+4. Updates the provider reference and initializes the incoming provider (`start()`).
+5. Launches exactly one coroutine collector on `frames` to resume feature extraction and inference without interruption.
+
+### Hardware Testing Procedure (Physical Device)
+1. Ensure the Python BLE peripheral is running on the host in hardware mode:
+   ```powershell
+   python -m python_core.bumble_service --mode hardware --transport usb:0 --rate 10
+   ```
+2. Build and install the debug APK onto a physical Android device:
+   ```bash
+   ./gradlew installDebug
+   ```
+3. Grant runtime `BLUETOOTH_CONNECT`, `BLUETOOTH_SCAN`, and `POST_NOTIFICATIONS` permissions.
+4. Observe GATT connection, MTU 247 negotiation, and real-time streaming on the diagnostic screen.
 
 ---
 

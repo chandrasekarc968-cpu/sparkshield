@@ -206,12 +206,14 @@ class BumbleBlePeripheral:
         char_uuid: str = TELEMETRY_CHAR_UUID,
         address: str = "F0:F1:F2:F3:F4:F5",
         controller=None,
+        transport=None,
     ):
         self.device_name = device_name
         self.service_uuid = service_uuid
         self.char_uuid = char_uuid
         self.address = address
         self.controller = controller
+        self.transport = transport
         self.device = None
         self.telemetry_char = None
         self.service = None
@@ -232,7 +234,14 @@ class BumbleBlePeripheral:
 
         self.service = Service(self.service_uuid, [self.telemetry_char])
 
-        if self.controller is not None:
+        if self.transport is not None:
+            self.device = Device.with_hci(
+                name=self.device_name,
+                address=self.address,
+                hci_source=self.transport.source,
+                hci_sink=self.transport.sink,
+            )
+        elif self.controller is not None:
             self.device = Device.with_hci(
                 name=self.device_name,
                 address=self.address,
@@ -245,12 +254,20 @@ class BumbleBlePeripheral:
         self.device.add_service(self.service)
 
     async def start(self):
-        """Powers on device and initiates BLE advertising."""
+        """Powers on device and initiates BLE advertising with Service UUID."""
         if self.device is None:
             self.initialize_gatt()
 
+        from bumble.core import AdvertisingData, UUID
+
         await self.device.power_on()
-        await self.device.start_advertising()
+
+        # Advertise device name and 128-bit SparkShield Service UUID
+        adv_data = AdvertisingData([
+            (AdvertisingData.COMPLETE_LOCAL_NAME, bytes(self.device_name, "utf-8")),
+            (AdvertisingData.COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS, bytes(UUID(self.service_uuid))),
+        ])
+        await self.device.start_advertising(advertising_data=bytes(adv_data), auto_restart=True)
         self.is_running = True
         logger.info("BumbleBlePeripheral active and advertising as '%s' (UUID: %s)", self.device_name, self.service_uuid)
 

@@ -218,3 +218,32 @@ def test_sequence_tracker_wraparound():
     assert ok is False
     assert dropped == 2
     assert tracker.total_dropped == 2
+
+
+def test_sequence_rollover_uint32_boundary_gap():
+    """SequenceTracker jumping directly across uint32 boundary with gap."""
+    tracker = SequenceTracker(initial_sequence=0xFFFFFFFE)
+    # Jump from 0xFFFFFFFE to 2 (missed 0xFFFFFFFF, 0, 1 -> 3 dropped)
+    ok, dropped = tracker.process_sequence(2)
+    assert ok is False
+    assert dropped == 3
+    assert tracker.total_dropped == 3
+
+
+def test_invalid_event_flags_rejection(sample_frame):
+    """Frames with reserved upper bits or conflict flags must fail validation."""
+    from python_core.frame_protocol import FLAG_EMP, FLAG_NORMAL, FLAG_OPTICAL, FLAG_SURGE
+
+    # Conflict: NORMAL and EMP both set
+    sample_frame.event_flags = FLAG_NORMAL | FLAG_EMP
+    packed = pack_frame(sample_frame)
+    is_valid, err = validate_frame(packed)
+    assert is_valid is False
+    assert "flag" in err.lower() or "invalid" in err.lower()
+
+    # Reserved upper bits set
+    sample_frame.event_flags = 0x10 | FLAG_NORMAL
+    packed = pack_frame(sample_frame)
+    is_valid, err = validate_frame(packed)
+    assert is_valid is False
+

@@ -51,9 +51,11 @@ class SparkShieldMonitoringService(
 
     private val serviceScope = CoroutineScope(SupervisorJob() + backgroundDispatcher)
     private var processingJob: Job? = null
+    private var bleMonitorJob: Job? = null
 
     private lateinit var notificationHelper: NotificationHelper
-    private lateinit var telemetryProvider: TelemetryProvider
+    private var telemetryProvider: TelemetryProvider? = null
+    private var currentProviderMode: ProviderMode = ProviderMode.AUTO
     private lateinit var inferenceEngine: InferenceEngine
     private lateinit var featureExtractor: FeatureExtractor
     private lateinit var sequenceTracker: SequenceTracker
@@ -78,8 +80,6 @@ class SparkShieldMonitoringService(
         webSocketPublisher = WebSocketPublisher(port = 8765)
         webSocketPublisher.start()
 
-        // Decoupled architecture: initialize provider based on mode (AUTO, BLE, MOCK)
-        initializeProvider(currentProviderMode)
         inferenceEngine = CpuOnnxInferenceEngine(context = applicationContext)
 
         // Start ongoing foreground notification
@@ -106,7 +106,8 @@ class SparkShieldMonitoringService(
                 )
             }
 
-            startProcessingPipeline()
+            // Start provider after model loading finishes
+            setProviderMode(currentProviderMode)
         }
     }
 
@@ -114,11 +115,7 @@ class SparkShieldMonitoringService(
         if (intent?.hasExtra(EXTRA_PROVIDER_MODE) == true) {
             val requestedMode = ProviderMode.fromString(intent.getStringExtra(EXTRA_PROVIDER_MODE))
             if (requestedMode != currentProviderMode) {
-                serviceScope.launch {
-                    telemetryProvider.stop()
-                    initializeProvider(requestedMode)
-                    startProcessingPipeline()
-                }
+                setProviderMode(requestedMode)
             }
         }
 
@@ -141,254 +138,302 @@ class SparkShieldMonitoringService(
         return START_STICKY
     }
 
-    private fun initializeProvider(mode: ProviderMode) {
+    private fun setProviderMode(mode: ProviderMode) {
         currentProviderMode = mode
         when (mode) {
             ProviderMode.MOCK -> {
-                telemetryProvider = MockTelemetryProvider(intervalMs = 100L)
-                _serviceState.update {
-                    it.copy(
-                        providerMode = "MOCK",
-                        providerDetails = "In-memory synthetic telemetry stream (10 Hz)"
-                    )
-                }
+                val mock = MockTelemetryProvider(intervalMs = 100L)
+                switchProvider(
+                    newProvider = mock,
+                    modeName = "MOCK",
+                    statusDetails = "In-memory synthetic telemetry stream (10 Hz)"
+                )
             }
             ProviderMode.BLE -> {
                 val ble = BleTelemetryProvider(applicationContext)
-                telemetryProvider = ble
-                _serviceState.update {
-                    it.copy(
-                        providerMode = "BLE",
-                        providerDetails = "Connecting to SparkShield-Core via BLE..."
-                    )
-                }
-                monitorBleProvider(ble, fallbackOnFail = false)
+                switchProvider(
+                    newProvider = ble,
+                    modeName = "BLE",
+                    statusDetails = "Connecting to SparkShield-Core via BLE..."
+                )
             }
             ProviderMode.AUTO -> {
                 val ble = BleTelemetryProvider(applicationContext)
                 if (!ble.hasRequiredPermissions()) {
                     val missing = ble.getMissingPermissions().joinToString(", ")
-                    telemetryProvider = MockTelemetryProvider(intervalMs = 100L)
-                    _serviceState.update {
-                        it.copy(
-                            providerMode = "AUTO",
-                            providerDetails = "Fallback to MOCK: Bluetooth permissions not granted ($missing)"
-                        )
-                    }
+                    val mock = MockTelemetryProvider(intervalMs = 100L)
+                    switchProvider(
+                        newProvider = mock,
+                        modeName = "AUTO",
+                        statusDetails = "Fallback to MOCK: Bluetooth permissions not granted ($missing)"
+                    )
                 } else {
-                    telemetryProvider = ble
-                    _serviceState.update {
-                        it.copy(
-                            providerMode = "AUTO",
-                            providerDetails = "Preferring BLE: Scanning for SparkShield-Core..."
-                        )
-                    }
-                    monitorBleProvider(ble, fallbackOnFail = true)
+                    switchProvider(
+                        newProvider = ble,
+                        modeName = "AUTO",
+                        statusDetails = "Preferring BLE: Scanning for SparkShield-Core..."
+                    )
                 }
             }
         }
     }
 
-    private fun monitorBleProvider(ble: BleTelemetryProvider, fallbackOnFail: Boolean) {
-        serviceScope.launch {
-            ble.connectionState.collect { state ->
-                when (state) {
-                    is BleConnectionState.Streaming -> {
-                        _serviceState.update {
-                            it.copy(
-                                providerDetails = "BLE Streaming from SparkShield-Core",
-                                bleRssi = ble.rssi.value
-                            )
-                        }
-                    }
-                    is BleConnectionState.PermissionDenied -> {
-                        if (fallbackOnFail) {
-                            val missing = state.missingPermissions.joinToString(", ")
-                            telemetryProvider = MockTelemetryProvider(intervalMs = 100L)
-                            serviceScope.launch { telemetryProvider.start() }
-                            _serviceState.update {
-                                it.copy(
-                                    providerDetails = "Fallback to MOCK: Permissions denied ($missing)"
-                                )
-                            }
-                        }
-                    }
-                    is BleConnectionState.AdapterUnavailable -> {
-                        if (fallbackOnFail) {
-                            telemetryProvider = MockTelemetryProvider(intervalMs = 100L)
-                            serviceScope.launch { telemetryProvider.start() }
-                            _serviceState.update {
-                                it.copy(
-                                    providerDetails = "Fallback to MOCK: ${state.reason}"
-                                )
-                            }
-                        }
-                    }
-                    is BleConnectionState.Disconnected -> {
-                        _serviceState.update {
-                            it.copy(providerDetails = "BLE: ${state.reason}")
-                        }
-                    }
-                    else -> {}
-                }
+    private fun switchProvider(newProvider: TelemetryProvider, modeName: String, statusDetails: String) {
+        // 1. Cancel previous frame processing job atomically
+        processingJob?.cancel()
+        processingJob = null
+
+        // 2. Cancel previous BLE monitoring job to prevent leaked callbacks
+        bleMonitorJob?.cancel()
+        bleMonitorJob = null
+
+        // 3. Stop old provider cleanly if different
+        val oldProvider = telemetryProvider
+        if (oldProvider != null && oldProvider !== newProvider) {
+            serviceScope.launch {
+                oldProvider.stop()
             }
         }
 
-        serviceScope.launch {
-            ble.rssi.collect { rssiVal ->
-                if (rssiVal != null) {
-                    _serviceState.update { it.copy(bleRssi = rssiVal) }
-                }
-            }
-        }
-    }
+        telemetryProvider = newProvider
 
-    private fun startProcessingPipeline() {
-        if (processingJob?.isActive == true) return
-
-        serviceScope.launch {
-            telemetryProvider.start()
-        }
+        val isMock = newProvider is MockTelemetryProvider
 
         _serviceState.update {
             it.copy(
                 isServiceRunning = true,
-                isConnected = true
+                providerMode = modeName,
+                providerDetails = statusDetails,
+                // Do not report isConnected=true before BLE reaches Streaming state
+                isConnected = isMock,
+                bleRssi = if (isMock) null else it.bleRssi
             )
         }
 
+        // 4. If BLE provider, monitor connection state with automatic fallback in AUTO mode
+        if (newProvider is BleTelemetryProvider) {
+            bleMonitorJob = serviceScope.launch {
+                launch {
+                    newProvider.connectionState.collect { state ->
+                        when (state) {
+                            is BleConnectionState.Streaming -> {
+                                _serviceState.update {
+                                    it.copy(
+                                        isConnected = true,
+                                        providerDetails = "BLE Streaming from SparkShield-Core",
+                                        bleRssi = newProvider.rssi.value
+                                    )
+                                }
+                            }
+                            is BleConnectionState.PermissionDenied -> {
+                                _serviceState.update { it.copy(isConnected = false) }
+                                if (currentProviderMode == ProviderMode.AUTO) {
+                                    val missing = state.missingPermissions.joinToString(", ")
+                                    switchProvider(
+                                        newProvider = MockTelemetryProvider(intervalMs = 100L),
+                                        modeName = "AUTO",
+                                        statusDetails = "Fallback to MOCK: Permissions denied ($missing)"
+                                    )
+                                } else {
+                                    _serviceState.update {
+                                        it.copy(providerDetails = "BLE Error: Permissions denied")
+                                    }
+                                }
+                            }
+                            is BleConnectionState.AdapterUnavailable -> {
+                                _serviceState.update { it.copy(isConnected = false) }
+                                if (currentProviderMode == ProviderMode.AUTO) {
+                                    switchProvider(
+                                        newProvider = MockTelemetryProvider(intervalMs = 100L),
+                                        modeName = "AUTO",
+                                        statusDetails = "Fallback to MOCK: ${state.reason}"
+                                    )
+                                } else {
+                                    _serviceState.update {
+                                        it.copy(providerDetails = "BLE Error: ${state.reason}")
+                                    }
+                                }
+                            }
+                            is BleConnectionState.Disconnected -> {
+                                _serviceState.update {
+                                    it.copy(
+                                        isConnected = false,
+                                        providerDetails = "BLE: ${state.reason}"
+                                    )
+                                }
+                            }
+                            is BleConnectionState.Scanning -> {
+                                _serviceState.update {
+                                    it.copy(
+                                        isConnected = false,
+                                        providerDetails = "Scanning for SparkShield-Core..."
+                                    )
+                                }
+                            }
+                            is BleConnectionState.Connecting -> {
+                                _serviceState.update {
+                                    it.copy(
+                                        isConnected = false,
+                                        providerDetails = "Connecting to GATT server..."
+                                    )
+                                }
+                            }
+                            else -> {}
+                        }
+                    }
+                }
+
+                launch {
+                    newProvider.rssi.collect { rssiVal ->
+                        if (rssiVal != null && _serviceState.value.isConnected) {
+                            _serviceState.update { it.copy(bleRssi = rssiVal) }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Start new provider
+        serviceScope.launch {
+            newProvider.start()
+        }
+
+        // 6. Launch single fresh processingJob collecting from newProvider.frames
         processingJob = serviceScope.launch {
-            telemetryProvider.frames
+            newProvider.frames
                 .catch { cause ->
-                    // Handle provider failures gracefully without crashing service
                     _serviceState.update { current ->
                         current.copy(latestProtocolError = "Provider stream error: ${cause.message}")
                     }
                 }
                 .collect { rawBytes ->
-                    receivedFramesCount++
+                    processRawTelemetryFrame(rawBytes)
+                }
+        }
+    }
 
-                    when (val parseResult = TelemetryFrameParser.parse(rawBytes)) {
-                        is ProtocolResult.Success -> {
-                            validFramesCount++
-                            val frame = parseResult.value
+    private suspend fun processRawTelemetryFrame(rawBytes: ByteArray) {
+        receivedFramesCount++
 
-                            // Sequence tracking & dropped packet calculation
-                            when (val seqStatus = sequenceTracker.process(frame.sequenceId)) {
-                                is SequenceStatus.Gap -> {
-                                    droppedFramesCount += seqStatus.droppedCount
-                                }
-                                else -> {}
-                            }
+        when (val parseResult = TelemetryFrameParser.parse(rawBytes)) {
+            is ProtocolResult.Success -> {
+                validFramesCount++
+                val frame = parseResult.value
 
-                            // 1. Sliding window feature extraction (128 floats)
-                            val featureTensor = featureExtractor.update(frame)
+                // Sequence tracking & dropped packet calculation
+                when (val seqStatus = sequenceTracker.process(frame.sequenceId)) {
+                    is SequenceStatus.Gap -> {
+                        droppedFramesCount += seqStatus.droppedCount
+                    }
+                    else -> {}
+                }
 
-                            // 2. Execute inference only when at least 8 frames are available (or warmup mode)
-                            val inferenceResult: InferenceResult
-                            if (featureExtractor.isReadyForInference && _serviceState.value.isModelLoaded) {
-                                val inferResult = inferenceEngine.infer(featureTensor)
-                                if (inferResult.isSuccess) {
-                                    inferenceResult = inferResult.getOrThrow()
-                                    inferredFramesCount++
-                                } else {
-                                    inferenceResult = InferenceResult(
-                                        label = "NORMAL",
-                                        classIndex = 0,
-                                        probabilities = floatArrayOf(1.0f, 0.0f, 0.0f, 0.0f),
-                                        confidence = 1.0f,
-                                        inferenceTimeUs = 0L
-                                    )
-                                }
-                            } else {
-                                inferenceResult = InferenceResult(
-                                    label = "NORMAL (WARMING UP)",
-                                    classIndex = 0,
-                                    probabilities = floatArrayOf(1.0f, 0.0f, 0.0f, 0.0f),
-                                    confidence = 1.0f,
-                                    inferenceTimeUs = 0L
-                                )
-                            }
+                // 1. Sliding window feature extraction (128 floats)
+                val featureTensor = featureExtractor.update(frame)
 
-                            // 3. Confidence-gated alert decision (>= 0.85, 5s rate limiting, reset on NORMAL)
-                            var newTamperEvent: TamperEvent? = null
-                            if (featureExtractor.isReadyForInference) {
-                                when (val decision = alertGate.evaluate(inferenceResult)) {
-                                    is AlertGate.AlertDecision.TriggerAlert -> {
-                                        tamperAlertsCount++
-                                        notificationHelper.postTamperAlert(decision)
-                                        newTamperEvent = TamperEvent(
-                                            timestampMs = decision.timestampMs,
-                                            tamperClass = decision.tamperClass,
-                                            confidence = decision.confidence,
-                                            message = decision.alertMessage
-                                        )
-                                    }
-                                    is AlertGate.AlertDecision.Suppressed -> {}
-                                }
-                            }
+                // 2. Execute inference only when at least 8 frames are available (or warmup mode)
+                val inferenceResult: InferenceResult
+                if (featureExtractor.isReadyForInference && _serviceState.value.isModelLoaded) {
+                    val inferResult = inferenceEngine.infer(featureTensor)
+                    if (inferResult.isSuccess) {
+                        inferenceResult = inferResult.getOrThrow()
+                        inferredFramesCount++
+                    } else {
+                        inferenceResult = InferenceResult(
+                            label = "NORMAL",
+                            classIndex = 0,
+                            probabilities = floatArrayOf(1.0f, 0.0f, 0.0f, 0.0f),
+                            confidence = 1.0f,
+                            inferenceTimeUs = 0L
+                        )
+                    }
+                } else {
+                    inferenceResult = InferenceResult(
+                        label = "NORMAL (WARMING UP)",
+                        classIndex = 0,
+                        probabilities = floatArrayOf(1.0f, 0.0f, 0.0f, 0.0f),
+                        confidence = 1.0f,
+                        inferenceTimeUs = 0L
+                    )
+                }
 
-                            // 4. Update UI StateFlow
-                            _serviceState.update { current ->
-                                val updatedLog = if (newTamperEvent != null) {
-                                    (listOf(newTamperEvent) + current.tamperAlertLog).take(20)
-                                } else {
-                                    current.tamperAlertLog
-                                }
-
-                                current.copy(
-                                    currentSequenceId = frame.sequenceId,
-                                    timestampMs = frame.timestampMs,
-                                    peakVoltageV = frame.peakV,
-                                    opticalSensorV = frame.opticalSensorV,
-                                    riseTimeNs = frame.riseTimeNs,
-                                    decayTimeMs = frame.decayTimeMs,
-                                    predictedClass = inferenceResult.label,
-                                    classIndex = inferenceResult.classIndex,
-                                    confidence = inferenceResult.confidence,
-                                    probabilities = inferenceResult.probabilities,
-                                    inferenceLatencyUs = inferenceResult.inferenceTimeUs,
-                                    receivedFrames = receivedFramesCount,
-                                    validFrames = validFramesCount,
-                                    invalidFrames = invalidFramesCount,
-                                    droppedFrames = droppedFramesCount,
-                                    inferredFrames = inferredFramesCount,
-                                    tamperAlerts = tamperAlertsCount,
-                                    latestProtocolError = null,
-                                    tamperAlertLog = updatedLog
-                                )
-                            }
-
-                            // 5. Asynchronously broadcast frame to WebSocket dashboard clients
-                            val isTamper = inferenceResult.classIndex != ClassLabels.NORMAL.id && inferenceResult.confidence >= 0.85f
-                            val wsMessage = TelemetryWsMessage(
-                                seqId = frame.sequenceId,
-                                timestampMs = frame.timestampMs,
-                                eventFlags = frame.eventFlags,
-                                peakMv = frame.peakMv,
-                                riseTimeNs = frame.riseTimeNs.toLong(),
-                                decayTimeUs = frame.decayTimeUs,
-                                opticalMv = frame.opticalSensorMv,
-                                fftBins = frame.fftEnergyBins.map { it.toInt() and 0xFF },
-                                classification = inferenceResult.label,
-                                confidence = inferenceResult.confidence,
-                                inferenceTimeUs = inferenceResult.inferenceTimeUs,
-                                tamperDetected = isTamper
+                // 3. Confidence-gated alert decision (>= 0.85, 5s rate limiting, reset on NORMAL)
+                var newTamperEvent: TamperEvent? = null
+                if (featureExtractor.isReadyForInference) {
+                    when (val decision = alertGate.evaluate(inferenceResult)) {
+                        is AlertGate.AlertDecision.TriggerAlert -> {
+                            tamperAlertsCount++
+                            notificationHelper.postTamperAlert(decision)
+                            newTamperEvent = TamperEvent(
+                                timestampMs = decision.timestampMs,
+                                tamperClass = decision.tamperClass,
+                                confidence = decision.confidence,
+                                message = decision.alertMessage
                             )
-                            webSocketPublisher.publish(wsMessage)
                         }
-                        is ProtocolResult.Failure -> {
-                            invalidFramesCount++
-                            _serviceState.update { current ->
-                                current.copy(
-                                    receivedFrames = receivedFramesCount,
-                                    invalidFrames = invalidFramesCount,
-                                    latestProtocolError = parseResult.error.message
-                                )
-                            }
-                        }
+                        is AlertGate.AlertDecision.Suppressed -> {}
                     }
                 }
+
+                // 4. Update UI StateFlow
+                _serviceState.update { current ->
+                    val updatedLog = if (newTamperEvent != null) {
+                        (listOf(newTamperEvent) + current.tamperAlertLog).take(20)
+                    } else {
+                        current.tamperAlertLog
+                    }
+
+                    current.copy(
+                        currentSequenceId = frame.sequenceId,
+                        timestampMs = frame.timestampMs,
+                        peakVoltageV = frame.peakV,
+                        opticalSensorV = frame.opticalSensorV,
+                        riseTimeNs = frame.riseTimeNs,
+                        decayTimeMs = frame.decayTimeMs,
+                        predictedClass = inferenceResult.label,
+                        classIndex = inferenceResult.classIndex,
+                        confidence = inferenceResult.confidence,
+                        probabilities = inferenceResult.probabilities,
+                        inferenceLatencyUs = inferenceResult.inferenceTimeUs,
+                        receivedFrames = receivedFramesCount,
+                        validFrames = validFramesCount,
+                        invalidFrames = invalidFramesCount,
+                        droppedFrames = droppedFramesCount,
+                        inferredFrames = inferredFramesCount,
+                        tamperAlerts = tamperAlertsCount,
+                        latestProtocolError = null,
+                        tamperAlertLog = updatedLog
+                    )
+                }
+
+                // 5. Asynchronously broadcast frame to WebSocket dashboard clients
+                val isTamper = inferenceResult.classIndex != ClassLabels.NORMAL.id && inferenceResult.confidence >= 0.85f
+                val wsMessage = TelemetryWsMessage(
+                    seqId = frame.sequenceId,
+                    timestampMs = frame.timestampMs,
+                    eventFlags = frame.eventFlags,
+                    peakMv = frame.peakMv,
+                    riseTimeNs = frame.riseTimeNs,
+                    decayTimeUs = frame.decayTimeUs,
+                    opticalMv = frame.opticalSensorMv,
+                    fftBins = frame.fftEnergyBins.map { it.toInt() and 0xFF },
+                    classification = inferenceResult.label,
+                    confidence = inferenceResult.confidence,
+                    inferenceTimeUs = inferenceResult.inferenceTimeUs,
+                    tamperDetected = isTamper
+                )
+                webSocketPublisher.enqueueMessage(wsMessage)
+            }
+            is ProtocolResult.Failure -> {
+                invalidFramesCount++
+                _serviceState.update { current ->
+                    current.copy(
+                        receivedFrames = receivedFramesCount,
+                        invalidFrames = invalidFramesCount,
+                        latestProtocolError = parseResult.error.message
+                    )
+                }
+            }
         }
     }
 
@@ -396,10 +441,16 @@ class SparkShieldMonitoringService(
         processingJob?.cancel()
         processingJob = null
 
+        bleMonitorJob?.cancel()
+        bleMonitorJob = null
+
         webSocketPublisher.stop()
 
-        serviceScope.launch {
-            telemetryProvider.stop()
+        val provider = telemetryProvider
+        if (provider != null) {
+            serviceScope.launch {
+                provider.stop()
+            }
         }
 
         featureExtractor.reset()
