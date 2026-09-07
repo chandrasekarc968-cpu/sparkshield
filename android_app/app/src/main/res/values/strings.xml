@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">SparkShield</string>
+    <string name="service_monitoring_title">SparkShield Active</string>
+    <string name="service_monitoring_text">Edge AI smart-meter tamper monitoring active</string>
+    <string name="channel_monitoring_name">Meter Monitoring Service</string>
+    <string name="channel_monitoring_desc">Ongoing status of cyber-physical telemetry ingestion</string>
+    <string name="channel_alerts_name">Tamper Detection Alerts</string>
+    <string name="channel_alerts_desc">High-priority alerts for detected tamper events</string>
+    <string name="status_connected">Connected</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="tamper_alert_title">CYBER-PHYSICAL TAMPER DETECTED</string>
+</resources>
