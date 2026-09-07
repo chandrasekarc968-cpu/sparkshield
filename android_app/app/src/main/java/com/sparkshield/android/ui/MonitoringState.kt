@@ -39,7 +39,10 @@ data class MonitoringState(
     val inferredFrames: Long = 0L,
     val tamperAlerts: Long = 0L,
     val latestProtocolError: String? = null,
-    val tamperAlertLog: List<TamperEvent> = emptyList()
+    val tamperAlertLog: List<TamperEvent> = emptyList(),
+    val providerMode: String = "AUTO",
+    val providerDetails: String = "Initializing...",
+    val bleRssi: Int? = null
 ) {
     val latencyMs: Float
         get() = inferenceLatencyUs / 1000.0f

@@ -1,27 +1,32 @@
-"""SparkShield Telemetry Transport Layer and BLE Abstraction.
+"""SparkShield Telemetry Transport Layer and BLE GATT Peripheral Integration.
 
 Provides:
   - TelemetryTransport: Abstract base class for frame communication.
-  - MockLoopbackTransport: In-memory async queue transport (default), supporting
-    configurable drop rate, delay, and jitter for testing edge behavior.
-  - BlePeripheralTransport: BLE GATT Peripheral abstraction for over-the-air frame
-    notifications to Android devices.
+  - MockLoopbackTransport: In-memory async queue transport with simulated channel impairments.
+  - BlePeripheralTransport: Backward-compatible BLE GATT peripheral abstraction.
+  - BumbleBlePeripheral: Production Google Bumble BLE peripheral implementing GATT Service
+    1A860001-C7E2-432A-8C2A-8B6C7741E001, Telemetry Characteristic 1A860002-C7E2-432A-8C2A-8B6C7741E001,
+    MTU 247, and 29-byte frame notifications.
+
+SIMULATION ONLY:
+All telemetry, transients, and sensor readings represent software-simulated waveforms.
 """
 
 import abc
 import asyncio
 import logging
 import random
-from typing import Optional
+from typing import Callable, List, Optional
 
 from python_core.frame_protocol import FRAME_LENGTH
 
 logger = logging.getLogger("sparkshield.transport")
 
-# Standard SparkShield 128-bit UUIDs for Bluetooth Low Energy GATT
-SPARKSHIELD_SERVICE_UUID = "0000fe50-0000-1000-8000-00805f9b34fb"
-TELEMETRY_CHAR_UUID = "0000fe51-0000-1000-8000-00805f9b34fb"
-CONTROL_CHAR_UUID = "0000fe52-0000-1000-8000-00805f9b34fb"
+# SparkShield Production 128-bit UUIDs for Bluetooth Low Energy GATT
+SPARKSHIELD_SERVICE_UUID = "1A860001-C7E2-432A-8C2A-8B6C7741E001"
+TELEMETRY_CHAR_UUID = "1A860002-C7E2-432A-8C2A-8B6C7741E001"
+CONTROL_CHAR_UUID = "1A860003-C7E2-432A-8C2A-8B6C7741E001"
+DEFAULT_DEVICE_NAME = "SparkShield-Core"
 
 
 class TelemetryTransport(abc.ABC):
@@ -55,12 +60,7 @@ class TelemetryTransport(abc.ABC):
 
 
 class MockLoopbackTransport(TelemetryTransport):
-    """In-memory loopback transport for local simulation, testing, and IPC.
-
-    Supports realistic channel impairment simulation:
-      - simulated_packet_loss_ratio: Float in [0.0, 1.0]
-      - simulated_latency_ms: Artificial transmission delay
-    """
+    """In-memory loopback transport for local simulation, testing, and IPC."""
 
     def __init__(
         self,
@@ -83,7 +83,6 @@ class MockLoopbackTransport(TelemetryTransport):
 
     async def stop(self) -> None:
         self._connected = False
-        # Drain queue
         while not self.queue.empty():
             try:
                 self.queue.get_nowait()
@@ -105,13 +104,10 @@ class MockLoopbackTransport(TelemetryTransport):
 
         self.sent_count += 1
 
-        # Simulate channel packet loss
         if self.packet_loss_ratio > 0.0 and random.random() < self.packet_loss_ratio:
             self.dropped_count += 1
-            logger.debug("Simulated packet drop in MockLoopbackTransport")
-            return True  # Transport succeeded in transmitting, but channel dropped it
+            return True
 
-        # Simulate transmission delay if configured
         if self.latency_ms > 0:
             await asyncio.sleep(self.latency_ms / 1000.0)
 
@@ -143,7 +139,7 @@ class BlePeripheralTransport(TelemetryTransport):
 
     def __init__(
         self,
-        device_name: str = "SparkShield-Meter",
+        device_name: str = DEFAULT_DEVICE_NAME,
         service_uuid: str = SPARKSHIELD_SERVICE_UUID,
         char_uuid: str = TELEMETRY_CHAR_UUID,
     ):
@@ -155,17 +151,11 @@ class BlePeripheralTransport(TelemetryTransport):
         self._inbound_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
 
     async def start(self) -> bool:
-        """Start advertising as BLE GATT peripheral."""
         self._is_advertising = True
-        logger.info(
-            "BlePeripheralTransport advertising as '%s' with Service UUID %s",
-            self.device_name,
-            self.service_uuid,
-        )
+        logger.info("BlePeripheralTransport advertising as '%s' with Service UUID %s", self.device_name, self.service_uuid)
         return True
 
     async def stop(self) -> None:
-        """Stop advertising and disconnect clients."""
         self._is_advertising = False
         self._connected_subscribers = 0
         logger.info("BlePeripheralTransport stopped")
@@ -182,13 +172,11 @@ class BlePeripheralTransport(TelemetryTransport):
         self._connected_subscribers = max(0, count)
 
     async def send_frame(self, frame_bytes: bytes) -> bool:
-        """Send 29-byte notification to subscribed BLE centrals (e.g. Android device)."""
         if not self._is_advertising:
             return False
         if len(frame_bytes) != FRAME_LENGTH:
             raise ValueError(f"Invalid frame size: {len(frame_bytes)}")
 
-        # Enqueue for downstream subscriber delivery
         try:
             self._inbound_queue.put_nowait(frame_bytes)
             return True
@@ -202,3 +190,90 @@ class BlePeripheralTransport(TelemetryTransport):
             return await self._inbound_queue.get()
         except (asyncio.TimeoutError, asyncio.CancelledError):
             return None
+
+
+class BumbleBlePeripheral:
+    """Production Google Bumble BLE GATT Peripheral for SparkShield-Core.
+
+    Advertises service 1A860001-C7E2-432A-8C2A-8B6C7741E001 and characteristic
+    1A860002-C7E2-432A-8C2A-8B6C7741E001 with READ & NOTIFY permissions.
+    """
+
+    def __init__(
+        self,
+        device_name: str = DEFAULT_DEVICE_NAME,
+        service_uuid: str = SPARKSHIELD_SERVICE_UUID,
+        char_uuid: str = TELEMETRY_CHAR_UUID,
+        address: str = "F0:F1:F2:F3:F4:F5",
+        controller=None,
+    ):
+        self.device_name = device_name
+        self.service_uuid = service_uuid
+        self.char_uuid = char_uuid
+        self.address = address
+        self.controller = controller
+        self.device = None
+        self.telemetry_char = None
+        self.service = None
+        self.is_running = False
+        self._notification_subscribers = 0
+
+    def initialize_gatt(self):
+        """Builds Bumble Device, Service, and Characteristic objects."""
+        from bumble.device import Device
+        from bumble.gatt import Characteristic, Service
+
+        self.telemetry_char = Characteristic(
+            uuid=self.char_uuid,
+            properties=Characteristic.Properties.READ | Characteristic.Properties.NOTIFY,
+            permissions=Characteristic.Permissions.READABLE,
+            value=b"\x00" * FRAME_LENGTH,
+        )
+
+        self.service = Service(self.service_uuid, [self.telemetry_char])
+
+        if self.controller is not None:
+            self.device = Device.with_hci(
+                name=self.device_name,
+                address=self.address,
+                hci_source=self.controller,
+                hci_sink=self.controller,
+            )
+        else:
+            self.device = Device(name=self.device_name, address=self.address)
+
+        self.device.add_service(self.service)
+
+    async def start(self):
+        """Powers on device and initiates BLE advertising."""
+        if self.device is None:
+            self.initialize_gatt()
+
+        await self.device.power_on()
+        await self.device.start_advertising()
+        self.is_running = True
+        logger.info("BumbleBlePeripheral active and advertising as '%s' (UUID: %s)", self.device_name, self.service_uuid)
+
+    async def notify_frame(self, frame_bytes: bytes):
+        """Transmits 29-byte notification to subscribed BLE centrals."""
+        if not self.is_running or self.device is None or self.telemetry_char is None:
+            return
+
+        if len(frame_bytes) != FRAME_LENGTH:
+            raise ValueError(f"Frame must be {FRAME_LENGTH} bytes, got {len(frame_bytes)}")
+
+        await self.device.notify_subscribers(self.telemetry_char, frame_bytes)
+
+    async def stop(self):
+        """Stops advertising and powers off."""
+        self.is_running = False
+        if self.device is not None:
+            try:
+                await self.device.stop_advertising()
+            except Exception:
+                pass
+            try:
+                await self.device.power_off()
+            except Exception:
+                pass
+        logger.info("BumbleBlePeripheral stopped cleanly")

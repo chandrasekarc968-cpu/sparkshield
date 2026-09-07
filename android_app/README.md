@@ -210,9 +210,31 @@ By default, the provider executes a continuous repeating cycle:
 
 ---
 
-## 8. Deferred Phases & Rationale
+## 8. Bluetooth Low Energy (BLE) GATT Integration (Phase 5)
 
-- **Phase 4 (WebSocket / Desktop Dashboard)**: Deferred to avoid mixing Android edge processing with web backend networking.
-- **Phase 5 (Physical BLE Peripheral Ingestion)**: Deferred until core software-in-the-loop pipeline is verified; isolated behind `TelemetryProvider`.
-- **Phase 6 (Room Database Persistence)**: Deferred to prevent storage I/O bottlenecks during high-rate telemetry ingestion.
+`BleTelemetryProvider` implements the `TelemetryProvider` interface over Bluetooth Low Energy:
+- **Service UUID**: `1A860001-C7E2-432A-8C2A-8B6C7741E001`
+- **Telemetry Characteristic UUID**: `1A860002-C7E2-432A-8C2A-8B6C7741E001` (`READ | NOTIFY`)
+- **CCCD Descriptor UUID**: `00002902-0000-1000-8000-00805f9b34fb`
+- **MTU**: Requests `247` bytes upon connection for atomic 29-byte frame delivery without fragmentation.
+- **Buffering**: Bounded channel buffer `Channel<ByteArray>(100, BufferOverflow.DROP_OLDEST)` guarantees that inference processing or UI lag never stalls the GATT callback thread.
+
+### Android Permissions
+Supported across API levels up to Android 16:
+- `BLUETOOTH_SCAN` (`neverForLocation`)
+- `BLUETOOTH_CONNECT`
+- `POST_NOTIFICATIONS` (Android 13+)
+- `ACCESS_FINE_LOCATION` (Android 11 and older)
+
+### Provider Mode Selection (`ProviderMode.kt`)
+Configurable at runtime via Intent extra `SparkShieldMonitoringService.EXTRA_PROVIDER_MODE`:
+- `AUTO` (Default): Checks for Bluetooth permissions and adapter status. If available, connects to `SparkShield-Core` via BLE. If permissions or adapter are missing, falls back transparently to `MockTelemetryProvider` with status reason shown on the UI.
+- `BLE`: Forces BLE connection; enters bounded exponential reconnect loop if disconnected.
+- `MOCK`: Uses pure deterministic local simulation.
+
+---
+
+## 9. Deferred Phases & Rationale
+
+- **Phase 6 (Room Database Persistence)**: Deferred to prevent flash storage write wear during continuous high-frequency telemetry streaming.
 - **Phase 7 (Qualcomm QNN / Hexagon HTP Acceleration)**: Deferred until CPU ONNX baseline is established; isolated behind `InferenceEngine`.

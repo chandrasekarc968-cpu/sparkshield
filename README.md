@@ -210,25 +210,80 @@ npm run preview       # Preview production build on http://localhost:3000
 
 ---
 
-## Phase 4 Demo Checklist
+## Phase 5: Production BLE GATT Transport Integration
 
-- [x] **Connection Status**: Green dot indicates live WebSocket connection; automatically reconnects with backoff if publisher restarts.
-- [x] **Classification Visuals**: Emerald green card for `NORMAL`; glowing, high-priority pulsing red card and banner for `EMP` and `OPTICAL`; amber card for `SURGE`.
-- [x] **Confidence Gating**: Confidence meter dynamically reflects softmax probabilities; alerts trigger strictly at $\ge 0.85$.
-- [x] **Dual Waveform Canvas**: Real-time scrolling peak voltage (cyan) and optical sensor rail (amber) rendered smoothly via `requestAnimationFrame`.
-- [x] **FFT Spectrum Canvas**: 8-bin frequency bar chart highlighting high-frequency spectral spikes.
-- [x] **Latency Profiler**: Displays edge inference execution duration in microseconds ($\mu\text{s}$).
-- [x] **Bounded History & Event Log**: Recent tamper attacks logged chronologically up to 50 events without memory leaks.
-- [x] **Stream Watchdog**: Stale stream indicator triggers if frames stop for >3 seconds.
+Phase 5 establishes real-time Bluetooth Low Energy (BLE) GATT telemetry streaming from the Python host peripheral to the Android edge inference engine.
+
+### BLE Architecture & GATT Specifications
+- **Device Name**: `SparkShield-Core`
+- **Service UUID**: `1A860001-C7E2-432A-8C2A-8B6C7741E001`
+- **Telemetry Characteristic UUID**: `1A860002-C7E2-432A-8C2A-8B6C7741E001` (`READ | NOTIFY`)
+- **Client Characteristic Configuration Descriptor (CCCD)**: `00002902-0000-1000-8000-00805f9b34fb`
+- **MTU Size**: `247` bytes negotiated for atomic, non-fragmented 29-byte frame deliveries
+- **Payload**: Strict 29-byte big-endian frames with CRC-16-CCITT validation
+
+### Android Permissions (API 31 - 36 / Android 12 - 16)
+The following runtime permissions are declared and handled:
+- `android.permission.BLUETOOTH_SCAN`: Configured with `neverForLocation` flag
+- `android.permission.BLUETOOTH_CONNECT`: For connecting to GATT server and receiving notifications
+- `android.permission.POST_NOTIFICATIONS`: For high-priority tamper alerts (Android 13+)
+- `android.permission.ACCESS_FINE_LOCATION`: Fallback for legacy devices (Android <= 11)
+
+### Provider Modes: `AUTO`, `BLE`, `MOCK`
+The Android monitoring service supports runtime-selectable telemetry ingestion:
+1. **`AUTO` (Default)**: Inspects Bluetooth availability and runtime permissions. If present, connects to `SparkShield-Core` over BLE. If BLE permissions or hardware adapter are unavailable, it seamlessly falls back to `MockTelemetryProvider` with a visible status reason (`Fallback to MOCK: Bluetooth permissions not granted`).
+2. **`BLE`**: Strictly requires BLE connection; attempts reconnection with bounded exponential backoff (1s, 2s, 4s, 8s, up to 15s max).
+3. **`MOCK`**: Pure local deterministic synthetic streaming without touching Bluetooth radio.
+
+### Running the Python Bumble Peripheral
+To launch the Bumble BLE peripheral:
+```powershell
+python -m python_core.bumble_service --rate 10 --name SparkShield-Core
+```
+Or via Makefile:
+```bash
+make run-ble-peripheral
+```
+
+### Bluetooth Troubleshooting
+- **Missing Permissions**: Grant `Nearby Devices` (Bluetooth) permission to SparkShield in Android App Info settings.
+- **Adapter Disabled**: Turn on Bluetooth in system settings.
+- **Peripheral Not Found**: Ensure Python peripheral is running and not already bonded to another central.
+- **Notification Stalls**: Check if MTU 247 negotiation completed. Bounded channel buffer (`100` frames, `DROP_OLDEST`) ensures backpressure never blocks GATT callback threads.
+
+### Verification & Test Commands
+```powershell
+# Run Bumble BLE unit tests
+python -m pytest python_core/tests/test_ble_bumble.py -v
+
+# Run Phase 5 end-to-end BLE GATT pipeline verifier
+python tests/verify_phase5_ble.py
+
+# Run complete regression suite
+make test-all
+```
+
+---
+
+## Phase 5 Demo Checklist
+
+- [x] **Peripheral Advertising**: Python Bumble peripheral advertises `SparkShield-Core` with service `1A860001-C7E2-432A-8C2A-8B6C7741E001`.
+- [x] **GATT Characteristic**: Telemetry characteristic `1A860002-C7E2-432A-8C2A-8B6C7741E001` supports `READ` and `NOTIFY`.
+- [x] **MTU 247 Negotiation**: Peripheral and central negotiate MTU $\ge 247$ to stream 29-byte frames atomically.
+- [x] **Android BleTelemetryProvider**: Implements `TelemetryProvider` with non-blocking bounded buffering (`Channel(100, DROP_OLDEST)`).
+- [x] **Provider Mode Auto-Fallback**: In `AUTO` mode, gracefully falls back to `MockTelemetryProvider` when Bluetooth permissions or adapter are missing.
+- [x] **Frame Integrity & CRC**: Validates length (29B), magic (`0x5353`), CRC-16, and field ranges; drops malformed frames cleanly.
+- [x] **Sequence Tracking**: SequenceTracker monitors monotonically increasing sequence IDs and logs gaps and duplicate frames.
+- [x] **Bounded Backoff Reconnect**: Reconnection attempts scale exponentially (1s, 2s, 4s, 8s) up to 15s max.
+- [x] **End-to-End Pipeline**: Verified flow: Bumble Peripheral $\to$ BleTelemetryProvider $\to$ FeatureExtractor $\to$ ONNX Inference $\to$ WebSocket Publisher $\to$ Dashboard.
 
 ---
 
 ## Known Limitations
 
-1. **Simulation Boundary**: Telemetry, transient pulses, optical saturations, and inductive surges are generated mathematically by software models. The system does not interface with physical electrical meters, high-voltage equipment, or laser injection hardware.
-2. **Deferred BLE (Phase 5)**: Physical Bluetooth Low Energy peripheral ingestion is abstracted behind `TelemetryProvider`.
-3. **Deferred Persistence (Phase 6)**: Continuous high-frequency telemetry writes are kept in memory ring buffers to preserve flash longevity; persistent SQLite/Room event logging is deferred to Phase 6.
-4. **Deferred Qualcomm QNN (Phase 7)**: Inference is performed on CPU via ONNX Runtime Android (`ai.onnxruntime:onnxruntime-android:1.19.0`). Qualcomm Hexagon NPU hardware acceleration is planned for Phase 7.
+1. **Simulation Boundary**: All telemetry, transient waveforms, optical saturations, and inductive surges are generated mathematically by software models. The system does not interface with physical electrical meters, high-voltage equipment, or laser injection hardware.
+2. **Deferred Persistence (Phase 6)**: High-rate telemetry frames are processed in-memory to preserve flash endurance; persistent SQLite/Room event logging is deferred to Phase 6.
+3. **Deferred Qualcomm QNN (Phase 7)**: Edge inference runs on CPU via ONNX Runtime Android (`ai.onnxruntime:onnxruntime-android:1.19.0`). Qualcomm Hexagon NPU hardware acceleration is planned for Phase 7.
 
 ---
 
@@ -238,7 +293,8 @@ npm run preview       # Preview production build on http://localhost:3000
 - [x] **Phase 2**: 1D CNN model training, static ONNX export, numerical parity verification, and INT8 quantization.
 - [x] **Phase 3**: Android foreground service (`connectedDevice`), CPU ONNX inference, high-confidence alert gating ($\ge 0.85$).
 - [x] **Phase 4**: Asynchronous WebSocket publisher, local mock streamer, and real-time dark monitoring dashboard.
-- [ ] **Phase 5**: BLE transport integration over GATT peripheral.
+- [x] **Phase 5**: Production BLE transport integration (Bumble peripheral, GATT service/characteristic, Android BleTelemetryProvider, AUTO fallback).
 - [ ] **Phase 6**: Room persistence and Node-RED automation adapter.
 - [ ] **Phase 7**: Qualcomm QNN/QAIRT Hexagon HTP NPU hardware acceleration.
+
 

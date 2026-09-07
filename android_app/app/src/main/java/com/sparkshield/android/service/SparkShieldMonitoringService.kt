@@ -15,7 +15,10 @@ import com.sparkshield.android.protocol.ProtocolResult
 import com.sparkshield.android.protocol.SequenceStatus
 import com.sparkshield.android.protocol.SequenceTracker
 import com.sparkshield.android.protocol.TelemetryFrameParser
+import com.sparkshield.android.transport.BleConnectionState
+import com.sparkshield.android.transport.BleTelemetryProvider
 import com.sparkshield.android.transport.MockTelemetryProvider
+import com.sparkshield.android.transport.ProviderMode
 import com.sparkshield.android.transport.TelemetryProvider
 import com.sparkshield.android.ui.MonitoringState
 import com.sparkshield.android.ui.TamperEvent
@@ -75,8 +78,8 @@ class SparkShieldMonitoringService(
         webSocketPublisher = WebSocketPublisher(port = 8765)
         webSocketPublisher.start()
 
-        // Decoupled architecture: Mock provider for simulation
-        telemetryProvider = MockTelemetryProvider(intervalMs = 100L)
+        // Decoupled architecture: initialize provider based on mode (AUTO, BLE, MOCK)
+        initializeProvider(currentProviderMode)
         inferenceEngine = CpuOnnxInferenceEngine(context = applicationContext)
 
         // Start ongoing foreground notification
@@ -108,6 +111,17 @@ class SparkShieldMonitoringService(
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.hasExtra(EXTRA_PROVIDER_MODE) == true) {
+            val requestedMode = ProviderMode.fromString(intent.getStringExtra(EXTRA_PROVIDER_MODE))
+            if (requestedMode != currentProviderMode) {
+                serviceScope.launch {
+                    telemetryProvider.stop()
+                    initializeProvider(requestedMode)
+                    startProcessingPipeline()
+                }
+            }
+        }
+
         when (intent?.action) {
             ACTION_STOP -> {
                 stopMonitoring()
@@ -125,6 +139,108 @@ class SparkShieldMonitoringService(
             }
         }
         return START_STICKY
+    }
+
+    private fun initializeProvider(mode: ProviderMode) {
+        currentProviderMode = mode
+        when (mode) {
+            ProviderMode.MOCK -> {
+                telemetryProvider = MockTelemetryProvider(intervalMs = 100L)
+                _serviceState.update {
+                    it.copy(
+                        providerMode = "MOCK",
+                        providerDetails = "In-memory synthetic telemetry stream (10 Hz)"
+                    )
+                }
+            }
+            ProviderMode.BLE -> {
+                val ble = BleTelemetryProvider(applicationContext)
+                telemetryProvider = ble
+                _serviceState.update {
+                    it.copy(
+                        providerMode = "BLE",
+                        providerDetails = "Connecting to SparkShield-Core via BLE..."
+                    )
+                }
+                monitorBleProvider(ble, fallbackOnFail = false)
+            }
+            ProviderMode.AUTO -> {
+                val ble = BleTelemetryProvider(applicationContext)
+                if (!ble.hasRequiredPermissions()) {
+                    val missing = ble.getMissingPermissions().joinToString(", ")
+                    telemetryProvider = MockTelemetryProvider(intervalMs = 100L)
+                    _serviceState.update {
+                        it.copy(
+                            providerMode = "AUTO",
+                            providerDetails = "Fallback to MOCK: Bluetooth permissions not granted ($missing)"
+                        )
+                    }
+                } else {
+                    telemetryProvider = ble
+                    _serviceState.update {
+                        it.copy(
+                            providerMode = "AUTO",
+                            providerDetails = "Preferring BLE: Scanning for SparkShield-Core..."
+                        )
+                    }
+                    monitorBleProvider(ble, fallbackOnFail = true)
+                }
+            }
+        }
+    }
+
+    private fun monitorBleProvider(ble: BleTelemetryProvider, fallbackOnFail: Boolean) {
+        serviceScope.launch {
+            ble.connectionState.collect { state ->
+                when (state) {
+                    is BleConnectionState.Streaming -> {
+                        _serviceState.update {
+                            it.copy(
+                                providerDetails = "BLE Streaming from SparkShield-Core",
+                                bleRssi = ble.rssi.value
+                            )
+                        }
+                    }
+                    is BleConnectionState.PermissionDenied -> {
+                        if (fallbackOnFail) {
+                            val missing = state.missingPermissions.joinToString(", ")
+                            telemetryProvider = MockTelemetryProvider(intervalMs = 100L)
+                            serviceScope.launch { telemetryProvider.start() }
+                            _serviceState.update {
+                                it.copy(
+                                    providerDetails = "Fallback to MOCK: Permissions denied ($missing)"
+                                )
+                            }
+                        }
+                    }
+                    is BleConnectionState.AdapterUnavailable -> {
+                        if (fallbackOnFail) {
+                            telemetryProvider = MockTelemetryProvider(intervalMs = 100L)
+                            serviceScope.launch { telemetryProvider.start() }
+                            _serviceState.update {
+                                it.copy(
+                                    providerDetails = "Fallback to MOCK: ${state.reason}"
+                                )
+                            }
+                        }
+                    }
+                    is BleConnectionState.Disconnected -> {
+                        _serviceState.update {
+                            it.copy(providerDetails = "BLE: ${state.reason}")
+                        }
+                    }
+                    else -> {}
+                }
+            }
+        }
+
+        serviceScope.launch {
+            ble.rssi.collect { rssiVal ->
+                if (rssiVal != null) {
+                    _serviceState.update { it.copy(bleRssi = rssiVal) }
+                }
+            }
+        }
     }
 
     private fun startProcessingPipeline() {

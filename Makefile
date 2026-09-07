@@ -1,4 +1,4 @@
-.PHONY: help train-model evaluate-model export-onnx generate-calibration quantize-model test-models test-all run-mock run-mock-tcp mock-ws android-build android-test android-lint android-install-debug dashboard-install dashboard-dev dashboard-build dashboard-test test-phase4 clean
+.PHONY: help train-model evaluate-model export-onnx generate-calibration quantize-model test-models test-all run-mock run-mock-tcp run-ble-peripheral test-ble test-phase5 mock-ws android-build android-test android-lint android-install-debug dashboard-install dashboard-dev dashboard-build dashboard-test test-phase4 clean
 
 PYTHON ?= python
 GRADLE ?= $(if $(filter Windows_NT,$(OS)),gradlew.bat,./gradlew)
@@ -12,7 +12,10 @@ help:
 	@echo "  make generate-calibration - Generate 200 balanced calibration tensors & manifest"
 	@echo "  make quantize-model       - Static INT8 quantization with ONNX Runtime & compare on test set"
 	@echo "  make test-models          - Run ML pipeline, ONNX, and quantization unit tests"
-	@echo "  make test-all             - Run complete test suite (Phases 1-4, parity, and dashboard)"
+	@echo "  make test-ble             - Run Bumble BLE peripheral unit tests"
+	@echo "  make test-phase5          - Run Phase 5 end-to-end BLE GATT pipeline verifier"
+	@echo "  make test-all             - Run complete test suite (Phases 1-5, parity, and dashboard)"
+	@echo "  make run-ble-peripheral   - Run Bumble BLE GATT peripheral (SparkShield-Core)"
 	@echo "  make mock-ws              - Run mock WebSocket server on port 8765"
 	@echo "  make dashboard-install    - Install dashboard npm dependencies"
 	@echo "  make dashboard-dev        - Start dashboard Vite dev server on port 3000"
@@ -46,11 +49,21 @@ quantize-model:
 test-models:
 	$(PYTHON) -m pytest models/tests -v
 
+test-ble:
+	$(PYTHON) -m pytest python_core/tests/test_ble_bumble.py -v
+
+test-phase5:
+	$(PYTHON) tests/verify_phase5_ble.py
+
 test-all:
 	$(PYTHON) -m pytest python_core/tests models/tests -v
 	$(PYTHON) tests/verify_android_parity.py
 	$(PYTHON) tests/verify_phase4.py
+	$(PYTHON) tests/verify_phase5_ble.py
 	cd dashboard && $(NPM) test
+
+run-ble-peripheral:
+	$(PYTHON) -m python_core.bumble_service
 
 mock-ws:
 	$(PYTHON) -m python_core.mock_ws_server --port 8765
