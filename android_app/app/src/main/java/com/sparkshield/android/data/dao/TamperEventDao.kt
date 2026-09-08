@@ -22,6 +22,9 @@ interface TamperEventDao {
     @Query("SELECT * FROM tamper_events ORDER BY id DESC LIMIT :limit")
     fun getRecentEvents(limit: Int = 100): Flow<List<TamperEventEntity>>
 
+    @Query("SELECT * FROM tamper_events WHERE class_name = :className ORDER BY id DESC")
+    fun getEventsByClass(className: String): Flow<List<TamperEventEntity>>
+
     @Query("SELECT * FROM tamper_events ORDER BY id DESC")
     suspend fun getAllEvents(): List<TamperEventEntity>
 

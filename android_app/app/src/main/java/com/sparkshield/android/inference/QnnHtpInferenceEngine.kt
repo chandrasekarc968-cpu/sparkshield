@@ -262,20 +262,14 @@ class QnnHtpInferenceEngine(
                 }
             }
 
-            val classification = when (bestClassIndex) {
-                0 -> ClassLabels.NORMAL
-                1 -> ClassLabels.EMP
-                2 -> ClassLabels.OPTICAL
-                3 -> ClassLabels.SURGE
-                else -> ClassLabels.NORMAL
-            }
+            val classification = ClassLabels.fromId(bestClassIndex)
 
             return@withContext Result.success(
                 InferenceResult(
-                    classification = classification,
-                    confidence = maxProb,
+                    label = classification.name,
                     classIndex = bestClassIndex,
                     probabilities = probabilities,
+                    confidence = maxProb,
                     inferenceTimeUs = latencyUs
                 )
             )

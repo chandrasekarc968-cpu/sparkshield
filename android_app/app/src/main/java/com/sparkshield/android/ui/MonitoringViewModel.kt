@@ -23,6 +23,10 @@ class MonitoringViewModel : ViewModel() {
     val recentPersistedAlerts: Flow<List<TamperEventEntity>>
         get() = repository?.recentTamperEvents ?: emptyFlow()
 
+    fun getTamperEvents(className: String? = null): Flow<List<TamperEventEntity>> {
+        return repository?.getTamperEvents(className) ?: emptyFlow()
+    }
+
     fun startMonitoring(context: Context) {
         SparkShieldMonitoringService.startService(context)
     }

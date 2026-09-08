@@ -9,4 +9,9 @@
     <string name="status_connected">Connected</string>
     <string name="status_disconnected">Disconnected</string>
     <string name="tamper_alert_title">CYBER-PHYSICAL TAMPER DETECTED</string>
+    <string name="title_dashboard">Dashboard</string>
+    <string name="title_monitor">Monitor</string>
+    <string name="title_detection">Detection</string>
+    <string name="title_history">History</string>
+    <string name="title_settings">Settings</string>
 </resources>

@@ -34,6 +34,8 @@ interface TelemetryRepository {
     val persistenceFailureCount: StateFlow<Long>
     val droppedSnapshotsCount: StateFlow<Long>
 
+    fun getTamperEvents(className: String? = null): Flow<List<TamperEventEntity>>
+
     suspend fun recordTamperEvent(event: TamperEventEntity)
     fun recordTelemetrySnapshot(snapshot: TelemetrySnapshotEntity)
     suspend fun flushPendingSnapshots()
@@ -89,6 +91,14 @@ class RoomTelemetryRepository(
 
     override val recentTamperEvents: Flow<List<TamperEventEntity>> = tamperDao.getRecentEvents(100)
     override val recentSnapshots: Flow<List<TelemetrySnapshotEntity>> = snapshotDao.getRecentSnapshots(100)
+
+    override fun getTamperEvents(className: String?): Flow<List<TamperEventEntity>> {
+        return if (className == null) {
+            tamperDao.getRecentEvents(500)
+        } else {
+            tamperDao.getEventsByClass(className)
+        }
+    }
 
     private var periodicFlushJob: Job? = null
 
