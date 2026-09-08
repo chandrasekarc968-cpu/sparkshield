@@ -5,6 +5,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -156,12 +157,29 @@ fun LoginScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // Primary Action
+            // Primary Direct Access
             AuthenticationButton(
-                text = "Sign In",
-                onClick = viewModel::signIn,
+                text = "Enter SOC Console (Demo / Live)",
+                onClick = viewModel::enterDemoMode,
                 isLoading = uiState.isLoading
             )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = Color(0xFF388BFD).copy(alpha = 0.1f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF388BFD).copy(alpha = 0.4f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "SOFTWARE SIMULATION & LOCAL EDGE INFERENCE\nSafe local execution. Does not control physical meters.",
+                    fontSize = 10.sp,
+                    color = Color(0xFF58A6FF),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(8.dp)
+                )
+            }
 
             Spacer(modifier = Modifier.height(32.dp))
 

@@ -47,4 +47,9 @@
         android:label="Settings"
         tools:layout="@layout/fragment_settings" />
 
+    <fragment
+        android:id="@+id/navigation_simulation"
+        android:name="com.sparkshield.android.simulation.SimulationLabFragment"
+        android:label="Simulation Lab" />
+
 </navigation>

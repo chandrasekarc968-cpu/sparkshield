@@ -348,11 +348,100 @@
 
         </GridLayout>
 
+        <!-- Diagnostics & Parity Info -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            app:cardBackgroundColor="@color/surface_dark"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="0dp"
+            app:strokeColor="@color/card_border"
+            app:strokeWidth="1dp">
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+                <TextView
+                    android:text="TELEMETRY &amp; INFERENCE DIAGNOSTICS"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11sp"
+                    android:letterSpacing="0.1" />
+                <TextView
+                    android:id="@+id/tvFrameCounters"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="Valid: 0 | Dropped: 0 | Alerts: 0 | DB: 0 alerts, 0 snapshots"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:fontFamily="monospace" />
+                <TextView
+                    android:id="@+id/tvInferenceLatency"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Inference Latency: 0 µs (0.00 ms) | Accelerator: CPU (ONNX)"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11sp"
+                    android:fontFamily="monospace" />
+                <TextView
+                    android:id="@+id/tvProtocolError"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Protocol Error: None"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11sp"
+                    android:fontFamily="monospace" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Simulation Lab Quick Launch Card -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            app:cardBackgroundColor="@color/surface_dark"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="0dp"
+            app:strokeColor="@color/card_border"
+            app:strokeWidth="1dp">
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+                <TextView
+                    android:text="INTERACTIVE SIMULATION LAB"
+                    android:textColor="@color/accent_blue"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:letterSpacing="0.1" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Tune synthetic waveforms, inspect 8-bin FFT spectrums, and verify edge model classification in pure software simulation."
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+                <Button
+                    android:id="@+id/btnOpenSimulationLab"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="Launch Simulation Lab"
+                    android:backgroundTint="@color/accent_blue" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- System Controls (Integrated in Dashboard) -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
+            android:layout_marginBottom="24dp"
             android:orientation="horizontal">
             <Button
                 android:id="@+id/btnToggleMonitor"

@@ -25,6 +25,10 @@
         <h1 class="brand-title">SparkShield Edge Monitoring</h1>
       </div>
       <span class="simulation-pill">Simulation Only</span>
+      <nav class="app-nav" aria-label="Main Navigation">
+        <button id="tab-btn-monitor" class="nav-tab active" type="button">⚡ Live Monitor</button>
+        <button id="tab-btn-simulation" class="nav-tab" type="button">🧪 Simulation Lab</button>
+      </nav>
     </div>
 
     <div class="header-controls">
@@ -42,6 +46,8 @@
 
   <!-- Main Dashboard Container -->
   <main class="dashboard-container">
+    <div id="view-simulation" style="display: none;"></div>
+    <div id="view-monitor">
 
     <!-- Top Key Metrics Cards -->
     <section class="metrics-grid" aria-label="Real-time Metrics">
@@ -170,6 +176,7 @@
       </div>
 
     </section>
+    </div> <!-- end #view-monitor -->
 
   </main>
 

@@ -30,32 +30,20 @@ class LoginViewModel : ViewModel() {
         _uiState.update { it.copy(rememberDevice = remember) }
     }
 
+    fun enterDemoMode() {
+        _uiState.update { it.copy(isLoading = false, isLoginSuccessful = true) }
+    }
+
     fun signIn() {
         val currentState = _uiState.value
         
-        // Basic validation
-        val emailError = if (currentState.email.isBlank()) "Email cannot be empty" 
-                         else if (!android.util.Patterns.EMAIL_ADDRESS.matcher(currentState.email).matches()) "Invalid email format"
-                         else null
-        
-        val passwordError = if (currentState.password.isBlank()) "Password cannot be empty" else null
-
-        if (emailError != null || passwordError != null) {
-            _uiState.update { it.copy(emailError = emailError, passwordError = passwordError) }
+        // Basic validation if credentials provided, or allow direct demo login
+        if (currentState.email.isNotBlank() && !android.util.Patterns.EMAIL_ADDRESS.matcher(currentState.email).matches()) {
+            _uiState.update { it.copy(emailError = "Invalid email format") }
             return
         }
 
-        // Simulate demo login
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, loginErrorMessage = null) }
-            
-            // Artificial delay for premium feel
-            delay(1500L)
-            
-            // Demo authentication: Accept anything for now as requested
-            // In a real app, this would call an AuthRepository
-            _uiState.update { it.copy(isLoading = false, isLoginSuccessful = true) }
-        }
+        _uiState.update { it.copy(isLoading = false, isLoginSuccessful = true) }
     }
 
     fun onLoginErrorDismissed() {

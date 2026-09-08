@@ -11,6 +11,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -51,6 +52,9 @@ class TelemetryRepositoryTest {
         }
 
         override fun getRecentEvents(limit: Int): Flow<List<TamperEventEntity>> = flow.asStateFlow()
+
+        override fun getEventsByClass(className: String): Flow<List<TamperEventEntity>> =
+            flow.asStateFlow().map { list -> list.filter { it.className == className } }
 
         override suspend fun getAllEvents(): List<TamperEventEntity> = events.toList()
 

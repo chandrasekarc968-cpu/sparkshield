@@ -171,10 +171,58 @@ document.addEventListener('DOMContentLoaded', () => {
   // Automatically initiate connection
   wsClient.connect();
 
+  // Tab switching: Live Monitor vs Simulation Lab
+  const tabBtnMonitor = document.getElementById('tab-btn-monitor');
+  const tabBtnSimulation = document.getElementById('tab-btn-simulation');
+  const viewMonitor = document.getElementById('view-monitor');
+  const viewSimulation = document.getElementById('view-simulation');
+
+  let simulationLab = null;
+  if (viewSimulation) {
+    import('./components/SimulationLabComponent.js').then(({ SimulationLabComponent }) => {
+      simulationLab = new SimulationLabComponent(viewSimulation, (result) => {
+        // Option to publish locally simulated frame into live dashboard state
+        state.processFrame({
+          sequenceId: result.sequenceId,
+          timestampMs: result.timestampMs,
+          peakMv: result.peakVoltageMv,
+          riseTimeNs: result.riseTimeNs,
+          decayTimeUs: result.decayTimeUs,
+          opticalMv: result.opticalSensorMv,
+          fftBins: result.fftEnergyBins,
+          classification: result.observedClass,
+          confidence: result.confidence,
+          inferenceTimeUs: result.inferenceLatencyUs,
+          tamperDetected: result.tamperDetected
+        });
+      });
+    });
+  }
+
+  if (tabBtnMonitor && tabBtnSimulation) {
+    tabBtnMonitor.addEventListener('click', () => {
+      tabBtnMonitor.classList.add('active');
+      tabBtnSimulation.classList.remove('active');
+      if (viewMonitor) viewMonitor.style.display = 'block';
+      if (viewSimulation) viewSimulation.style.display = 'none';
+    });
+
+    tabBtnSimulation.addEventListener('click', () => {
+      tabBtnSimulation.classList.add('active');
+      tabBtnMonitor.classList.remove('active');
+      if (viewMonitor) viewMonitor.style.display = 'none';
+      if (viewSimulation) {
+        viewSimulation.style.display = 'block';
+        if (simulationLab) simulationLab.render();
+      }
+    });
+  }
+
   // Cleanup on page unload
   window.addEventListener('beforeunload', () => {
     wsClient.disconnect();
     if (waveformRenderer) waveformRenderer.destroy();
     if (fftRenderer) fftRenderer.destroy();
+    if (simulationLab) simulationLab.destroy();
   });
 });

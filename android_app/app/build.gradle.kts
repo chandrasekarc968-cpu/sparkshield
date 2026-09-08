@@ -1,3 +1,4 @@
+plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
@@ -7,6 +8,7 @@
 android {
     namespace = "com.sparkshield.android"
     compileSdk = 35
+    buildToolsVersion = "36.0.0"
 
     defaultConfig {
         applicationId = "com.sparkshield.android"
@@ -22,10 +24,14 @@ android {
         }
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+    val ndkDir = file("${android.sdkDirectory}/ndk")
+    val hasValidNdk = ndkDir.exists() && (ndkDir.listFiles()?.any { File(it, "source.properties").exists() } == true)
+    if (hasValidNdk) {
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                version = "3.22.1"
+            }
         }
     }
 
@@ -72,6 +78,10 @@ android {
         viewBinding = true
         compose = true
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -111,6 +121,7 @@ dependencies {
     implementation(libs.androidx.navigation.ui)
 
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }

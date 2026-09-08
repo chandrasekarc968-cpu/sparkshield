@@ -105,21 +105,21 @@ class WebSocketServer(
 
     private fun performHandshake(client: ClientConnection): Boolean {
         val reader = BufferedReader(InputStreamReader(client.socket.getInputStream(), StandardCharsets.UTF_8))
-        var line: String? = reader.readLine() ?: return false
+        val requestLine = reader.readLine() ?: return false
 
-        if (!line.startsWith("GET ")) {
+        if (!requestLine.startsWith("GET ")) {
             return false
         }
 
         var secKey: String? = null
         while (true) {
-            line = reader.readLine() ?: break
-            if (line.isEmpty() || line == "\r") break
+            val headerLine = reader.readLine() ?: break
+            if (headerLine.isEmpty() || headerLine == "\r") break
 
-            val colonIndex = line.indexOf(':')
+            val colonIndex = headerLine.indexOf(':')
             if (colonIndex > 0) {
-                val headerName = line.substring(0, colonIndex).trim()
-                val headerVal = line.substring(colonIndex + 1).trim()
+                val headerName = headerLine.substring(0, colonIndex).trim()
+                val headerVal = headerLine.substring(colonIndex + 1).trim()
                 if (headerName.equals("Sec-WebSocket-Key", ignoreCase = true)) {
                     secKey = headerVal
                 }

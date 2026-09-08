@@ -65,5 +65,5 @@ object FeatureLayout {
     const val IDX_LOG_DECAY: Int = IDX_LOG_DECAY_TIME
     const val IDX_NORM_OPTICAL: Int = IDX_OPTICAL_SENSOR_MV
     const val IDX_OPTICAL_RAIL: Int = IDX_OPTICAL_RAIL_PROXIMITY
-    const val IDX_FFT_BIN_START: Int = IDX_FFT_BIN_START_IDX
+    const val IDX_FFT_BIN_START: Int = FFT_BIN_START_IDX
 }

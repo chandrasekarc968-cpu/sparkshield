@@ -45,7 +45,8 @@ class MainActivity : AppCompatActivity() {
                 R.id.navigation_monitor,
                 R.id.navigation_detection,
                 R.id.navigation_history,
-                R.id.navigation_settings
+                R.id.navigation_settings,
+                R.id.navigation_simulation
             )
         )
         

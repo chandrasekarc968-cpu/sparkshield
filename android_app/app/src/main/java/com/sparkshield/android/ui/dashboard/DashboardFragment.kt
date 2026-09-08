@@ -6,10 +6,11 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
-import androidx.fragment.app.viewModels
+import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.fragment.findNavController
 import com.sparkshield.android.R
 import com.sparkshield.android.databinding.FragmentDashboardBinding
 import com.sparkshield.android.inference.ClassLabels
@@ -21,7 +22,7 @@ class DashboardFragment : Fragment() {
 
     private var _binding: FragmentDashboardBinding? = null
     private val binding get() = _binding!!
-    private val viewModel: MonitoringViewModel by viewModels()
+    private val viewModel: MonitoringViewModel by activityViewModels()
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -46,6 +47,10 @@ class DashboardFragment : Fragment() {
             } else {
                 viewModel.startMonitoring(requireContext())
             }
+        }
+
+        binding.btnOpenSimulationLab.setOnClickListener {
+            findNavController().navigate(R.id.navigation_simulation)
         }
     }
 
@@ -119,6 +124,11 @@ class DashboardFragment : Fragment() {
             tvRise.text = "${state.riseTimeNs} ns"
             tvDecay.text = "${"%.2f".format(state.decayTimeMs)} ms"
             tvSequenceId.text = "SEQ #${state.currentSequenceId}"
+
+            // Parity Diagnostics
+            tvFrameCounters.text = "Valid: ${state.validFrames} | Dropped: ${state.droppedFrames} | Alerts: ${state.tamperAlerts} | DB: ${state.persistedTamperEvents} alerts, ${state.persistedSnapshots} snapshots"
+            tvInferenceLatency.text = "Inference Latency: ${state.inferenceLatencyUs} µs (${"%.2f".format(state.latencyMs)} ms) | Accelerator: ${state.accelerator}"
+            tvProtocolError.text = "Protocol Error: ${state.latestProtocolError ?: "None"}"
         }
     }
 

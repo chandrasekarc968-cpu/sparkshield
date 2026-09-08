@@ -7,6 +7,7 @@ __pycache__/
 
 # Artifacts & Generated Models
 artifacts/
+.artifacts/
 *.pt
 *.onnx
 !android_app/app/src/main/assets/*.onnx

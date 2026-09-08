@@ -584,6 +584,7 @@ class SparkShieldMonitoringService(
 
         const val EXTRA_TAMPER_CLASS_ID = "extra_tamper_class_id"
         const val EXTRA_TAMPER_BURST_COUNT = "extra_tamper_burst_count"
+        const val EXTRA_PROVIDER_MODE = "extra_provider_mode"
 
         @Volatile
         private var instance: SparkShieldMonitoringService? = null
@@ -592,6 +593,8 @@ class SparkShieldMonitoringService(
         val serviceState: StateFlow<MonitoringState> = _serviceState.asStateFlow()
 
         fun getTelemetryRepository(): TelemetryRepository? = instance?.telemetryRepository
+        fun getInferenceEngine(): InferenceEngine? = instance?.inferenceEngine
+        fun getWebSocketPublisher(): WebSocketPublisher? = instance?.webSocketPublisher
 
         fun setTelemetryRepositoryForTesting(repo: TelemetryRepository?) {
             instance?.telemetryRepository = repo
@@ -626,6 +629,17 @@ class SparkShieldMonitoringService(
                 putExtra(EXTRA_TAMPER_BURST_COUNT, burstCount)
             }
             context.startService(intent)
+        }
+
+        fun setProviderMode(context: Context, mode: com.sparkshield.android.transport.ProviderMode) {
+            val intent = Intent(context, SparkShieldMonitoringService::class.java).apply {
+                putExtra(EXTRA_PROVIDER_MODE, mode.name)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
         }
     }
 }

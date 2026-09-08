@@ -8,8 +8,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
-  <script type="module" crossorigin src="/assets/index-CsAfCBCX.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-BVDgGv4r.css">
+  <script type="module" crossorigin src="/assets/index-BMr8mx6u.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-B-ECoLcy.css">
 </head>
 <body>
 
@@ -26,6 +26,10 @@
         <h1 class="brand-title">SparkShield Edge Monitoring</h1>
       </div>
       <span class="simulation-pill">Simulation Only</span>
+      <nav class="app-nav" aria-label="Main Navigation">
+        <button id="tab-btn-monitor" class="nav-tab active" type="button">⚡ Live Monitor</button>
+        <button id="tab-btn-simulation" class="nav-tab" type="button">🧪 Simulation Lab</button>
+      </nav>
     </div>
 
     <div class="header-controls">
@@ -43,6 +47,8 @@
 
   <!-- Main Dashboard Container -->
   <main class="dashboard-container">
+    <div id="view-simulation" style="display: none;"></div>
+    <div id="view-monitor">
 
     <!-- Top Key Metrics Cards -->
     <section class="metrics-grid" aria-label="Real-time Metrics">
@@ -171,6 +177,7 @@
       </div>
 
     </section>
+    </div> <!-- end #view-monitor -->
 
   </main>
 
